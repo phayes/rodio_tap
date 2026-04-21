@@ -3,16 +3,45 @@ use std::time::Duration;
 use crate::TapReader;
 use std::sync::Arc;
 
+/// Configuration for the FrameReader
+/// 
+/// You must specify at least one of `ms_per_batch` or `frames_per_batch`
+pub struct FrameReaderConfig {
+    /// target batch duration (e.g., Some(10) = ~10 ms)
+    pub ms_per_batch: Option<u32>,   
+    /// preferred fixed frame count per batch
+    pub frames_per_batch: Option<u32>, 
+    /// cap for read_chunk()
+    pub max_per_read_samples: usize, 
+    /// sleep when there is no active tap
+    pub no_tap_sleep: Duration,      
+    /// 0< bias <=1; actual sleep = bias * predicted_missing_time
+    pub sleep_bias: f32,             
+    /// lower clamp for tiny sleeps
+    pub min_sleep: Duration,         
+    /// upper clamp (safety)
+    pub max_sleep: Duration,         
+}
+
+impl Default for FrameReaderConfig {
+    fn default() -> Self {
+        Self {
+            ms_per_batch: Some(10),
+            frames_per_batch: None,
+            max_per_read_samples: 64 * 1024,
+            no_tap_sleep: Duration::from_secs(1),
+            sleep_bias: 0.75,
+            min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
+            max_sleep: Duration::from_millis(5),
+        }
+    }
+}
+
 /// Reads interleaved PCM in time-based batches.
 /// On each callback, you get a slice of length = frames_per_batch * channels (for the current tap).
 pub struct FrameReader {
-    // config
-    ms_per_batch: u32,           // target batch duration (e.g., 10 = ~10 ms)
-    max_per_read_samples: usize, // cap for read_chunk()
-    no_tap_sleep: Duration,      // sleep when there is no active tap
-    sleep_bias: f32,             // 0< bias <=1; actual sleep = bias * predicted_missing_time
-    min_sleep: Duration,         // lower clamp for tiny sleeps
-    max_sleep: Duration,         // upper clamp (safety)
+    tap_fn: Box<dyn Fn() -> Option<Arc<TapReader>> + Send + Sync>,
+    config: FrameReaderConfig,
 
     // live state
     active_consumer: Option<Consumer<f32>>,
@@ -29,14 +58,26 @@ pub struct FrameReader {
 }
 
 impl FrameReader {
-    pub fn new(ms_per_batch: u32) -> Self {
+    pub fn new<G>(tap_fn: G) -> Self
+    where
+        G: Fn() -> Option<Arc<TapReader>> + Send + Sync + 'static,
+    {
+        let config = FrameReaderConfig::default();
+        Self::new_with_config(config, tap_fn)
+    }
+
+    pub fn new_with_config<G>(config: FrameReaderConfig, tap_fn: G) -> Self
+    where
+        G: Fn() -> Option<Arc<TapReader>> + Send + Sync + 'static,
+    {
+        assert!(
+            config.frames_per_batch.is_some() || config.ms_per_batch.is_some(),
+            "FrameReaderConfig requires at least one batch target: frames_per_batch or ms_per_batch"
+        );
+
         Self {
-            ms_per_batch,
-            max_per_read_samples: 64 * 1024,
-            no_tap_sleep: Duration::from_secs(1),
-            sleep_bias: 0.75,
-            min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
-            max_sleep: Duration::from_millis(5),
+            tap_fn: Box::new(tap_fn),
+            config,
             active_consumer: None,
             active_generation: 0,
             ch: 0,
@@ -50,30 +91,39 @@ impl FrameReader {
     }
 
     pub fn with_max_per_read_samples(mut self, n: usize) -> Self {
-        self.max_per_read_samples = n;
+        self.config.max_per_read_samples = n;
         self
     }
 
     pub fn with_no_tap_sleep(mut self, d: Duration) -> Self {
-        self.no_tap_sleep = d;
+        self.config.no_tap_sleep = d;
         self
     }
 
     pub fn with_sleep_bias(mut self, bias_0to1: f32) -> Self {
-        self.sleep_bias = bias_0to1;
+        self.config.sleep_bias = bias_0to1;
         self
     }
 
     pub fn with_sleep_clamp(mut self, min: Duration, max: Duration) -> Self {
-        self.min_sleep = min;
-        self.max_sleep = max;
+        self.config.min_sleep = min;
+        self.config.max_sleep = max;
         self
     }
 
     #[inline]
     fn recompute_batch_size(&mut self) {
-        // frames = round(sr * ms / 1000), clamp to at least 1
-        let frames = ((self.sr as u64 * self.ms_per_batch as u64 + 500) / 1000).max(1) as usize;
+        let frames = if let Some(frames) = self.config.frames_per_batch {
+            frames as usize
+        } else {
+            let ms = self
+                .config
+                .ms_per_batch
+                .expect("FrameReaderConfig must set ms_per_batch when frames_per_batch is not set");
+            // frames = round(sr * ms / 1000)
+            ((self.sr as u64 * ms as u64 + 500) / 1000) as usize
+        }
+        .max(1);
         let samples = frames * self.ch;
         self.batch_len_samples = samples.max(self.ch); // ensure ≥ one frame
         self.batch_buf.resize(self.batch_len_samples, 0.0);
@@ -93,11 +143,10 @@ impl FrameReader {
                     self.peak_amplitude = tap.peak_amplitude;
                     self.recompute_batch_size();
                     log::debug!(
-                        "FrameReader attached gen {} ({} ch @ {} Hz, ~{} ms/batch ≈ {} frames)",
+                        "FrameReader attached gen {} ({} ch @ {} Hz, {} frames/batch)",
                         tap.generation,
                         tap.channels,
                         tap.sample_rate_hz,
-                        self.ms_per_batch,
                         self.batch_len_samples / self.ch
                     );
                     return true;
@@ -158,13 +207,13 @@ impl FrameReader {
         let missing_frames = missing / self.ch; // integer frames
         // time = frames / sr seconds
         let nanos_f =
-            (missing_frames as f64 / self.sr as f64) * 1_000_000_000.0 * (self.sleep_bias as f64);
+            (missing_frames as f64 / self.sr as f64) * 1_000_000_000.0 * (self.config.sleep_bias as f64);
         let mut d = Duration::from_nanos(nanos_f as u64);
-        if d < self.min_sleep {
-            d = self.min_sleep;
+        if d < self.config.min_sleep {
+            d = self.config.min_sleep;
         }
-        if d > self.max_sleep {
-            d = self.max_sleep;
+        if d > self.config.max_sleep {
+            d = self.config.max_sleep;
         }
         Some(d)
     }
@@ -201,9 +250,15 @@ impl FrameReader {
             + 'static,
     {
         loop {
-            if self.active_consumer.is_none() && !self.try_attach_or_switch() {
-                tokio::time::sleep(self.no_tap_sleep).await;
-                continue;
+            if self.active_consumer.is_none() {
+                let Some(tap) = (self.tap_fn)() else {
+                    tokio::time::sleep(self.config.no_tap_sleep).await;
+                    continue;
+                };
+                if !self.try_attach_or_switch(tap) {
+                    tokio::time::sleep(self.config.no_tap_sleep).await;
+                    continue;
+                }
             }
 
             let mut made_progress = false;
@@ -218,7 +273,7 @@ impl FrameReader {
                         break;
                     }
 
-                    let want = avail.min(self.max_per_read_samples);
+                    let want = avail.min(self.config.max_per_read_samples);
                     let Ok(chunk) = cons.read_chunk(want) else {
                         break;
                     };
@@ -270,10 +325,10 @@ impl FrameReader {
             }
 
             // Track boundary: reattach & recompute batch size; drop partial batch.
-            if let Some(tap) = PLAYER.current_track_tap() {
+            if let Some(tap) = (self.tap_fn)() {
                 if tap.generation != self.active_generation {
                     self.filled = 0; // drop partial to keep exact batch contract
-                    let _ = self.try_attach_or_switch();
+                    let _ = self.try_attach_or_switch(tap);
                     continue;
                 }
             }
