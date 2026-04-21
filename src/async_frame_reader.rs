@@ -1,45 +1,11 @@
 use rtrb::Consumer;
 use std::time::Duration;
-use crate::TapReader;
+use crate::{FrameReaderConfig, TapReader};
 use std::sync::Arc;
-
-/// Configuration for the FrameReader
-/// 
-/// You must specify at least one of `ms_per_batch` or `frames_per_batch`
-pub struct FrameReaderConfig {
-    /// target batch duration (e.g., Some(10) = ~10 ms)
-    pub ms_per_batch: Option<u32>,   
-    /// preferred fixed frame count per batch
-    pub frames_per_batch: Option<u32>, 
-    /// cap for read_chunk()
-    pub max_per_read_samples: usize, 
-    /// sleep when there is no active tap
-    pub no_tap_sleep: Duration,      
-    /// 0< bias <=1; actual sleep = bias * predicted_missing_time
-    pub sleep_bias: f32,             
-    /// lower clamp for tiny sleeps
-    pub min_sleep: Duration,         
-    /// upper clamp (safety)
-    pub max_sleep: Duration,         
-}
-
-impl Default for FrameReaderConfig {
-    fn default() -> Self {
-        Self {
-            ms_per_batch: Some(10),
-            frames_per_batch: None,
-            max_per_read_samples: 64 * 1024,
-            no_tap_sleep: Duration::from_secs(1),
-            sleep_bias: 0.75,
-            min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
-            max_sleep: Duration::from_millis(5),
-        }
-    }
-}
 
 /// Reads interleaved PCM in time-based batches.
 /// On each callback, you get a slice of length = frames_per_batch * channels (for the current tap).
-pub struct FrameReader {
+pub struct AsyncFrameReader {
     tap_fn: Box<dyn Fn() -> Option<Arc<TapReader>> + Send + Sync>,
     config: FrameReaderConfig,
 
@@ -48,8 +14,6 @@ pub struct FrameReader {
     active_generation: u32,
     ch: usize,
     sr: u32,
-    replay_gain: Option<f64>,
-    peak_amplitude: Option<f64>,
 
     // batch buffer (interleaved)
     batch_buf: Vec<f32>,
@@ -57,7 +21,7 @@ pub struct FrameReader {
     filled: usize,            // samples written so far (multiple of ch)
 }
 
-impl FrameReader {
+impl AsyncFrameReader {
     pub fn new<G>(tap_fn: G) -> Self
     where
         G: Fn() -> Option<Arc<TapReader>> + Send + Sync + 'static,
@@ -82,8 +46,6 @@ impl FrameReader {
             active_generation: 0,
             ch: 0,
             sr: 0,
-            replay_gain: None,
-            peak_amplitude: None,
             batch_buf: Vec::new(),
             batch_len_samples: 0,
             filled: 0,
@@ -139,11 +101,11 @@ impl FrameReader {
                     self.active_generation = tap.generation;
                     self.ch = tap.channels as usize;
                     self.sr = tap.sample_rate_hz;
-                    self.replay_gain = tap.replay_gain;
-                    self.peak_amplitude = tap.peak_amplitude;
                     self.recompute_batch_size();
+
+                    #[cfg(feature = "log")]
                     log::debug!(
-                        "FrameReader attached gen {} ({} ch @ {} Hz, {} frames/batch)",
+                        "AsyncFrameReader attached gen {} ({} ch @ {} Hz, {} frames/batch)",
                         tap.generation,
                         tap.channels,
                         tap.sample_rate_hz,
@@ -166,8 +128,6 @@ impl FrameReader {
                 usize,       /*channels*/
                 u32,         /*sr*/
                 u32,         /*generation*/
-                Option<f64>, /*Replay Gain*/
-                Option<f64>, /*Peak Amplitude*/
             ) + Send
             + 'static,
     {
@@ -186,8 +146,6 @@ impl FrameReader {
                     self.ch,
                     self.sr,
                     self.active_generation,
-                    self.replay_gain,
-                    self.peak_amplitude,
                 );
                 self.filled = 0;
             }
@@ -218,15 +176,15 @@ impl FrameReader {
         Some(d)
     }
 
-    /// Run forever, delivering batches close to `ms_per_batch`.
+    /// Run forever, delivering batches.
     ///
     /// The chunks will be interleaved, so you can use the channels parameter to map the samples to the channels using the Iter::chunks_exact(channels) method
     ///
     /// ```norun
     ///  // Aim for ~33 ms batches regardless of sr/ch
-    ///  let mut pump = PcmFramePump::new(33);
+    ///  let mut reader = AsyncFrameReader::new(|| tap.clone());
     ///
-    /// pump.run(|batch, ch, sr, gen| {
+    /// reader.run(|batch, ch, sr, gen| {
     ///    let frames = batch.len() / ch;
     ///    // example: per-channel averages across this time slice
     ///    let mut sums = vec![0.0f32; ch];
@@ -244,8 +202,6 @@ impl FrameReader {
                 usize,       /*channels*/
                 u32,         /*sr*/
                 u32,         /*gen*/
-                Option<f64>, /*replay_gain*/
-                Option<f64>, /*peak_amplitude*/
             ) + Send
             + 'static,
     {

@@ -124,7 +124,7 @@ impl<S: rodio::Source> TapAdapter<S> {
                 return;
             }
             Err(ChunkError::TooFewSlots(_)) => {
-                #[cfg(debug_assertions)]
+                #[cfg(all(debug_assertions, feature = "log"))]
                 log::debug!("TapAdapter: No space in ring buffer, dropped the frame.");
             }
         }
@@ -214,8 +214,6 @@ pub struct TapReader {
     pub sample_rate_hz: u32,
     pub channels: u16,
     pub generation: u32,
-    pub replay_gain: Option<f64>,
-    pub peak_amplitude: Option<f64>,
 }
 
 impl TapReader {
@@ -227,8 +225,6 @@ impl TapReader {
         target: &Arc<ArcSwapOption<TapReader>>,
         generation: u32,
         decoder: S,
-        replay_gain: Option<f64>,
-        peak_amplitude: Option<f64>,
     ) -> (Arc<TapReader>, TapAdapter<S>)
     where
         S: rodio::Source + Send + 'static,
@@ -249,8 +245,6 @@ impl TapReader {
             sample_rate_hz: sr.into(),
             channels: ch.into(),
             generation,
-            replay_gain,
-            peak_amplitude,
         });
 
         // Publish TapReader on first decoded sample (no locks on audio path)

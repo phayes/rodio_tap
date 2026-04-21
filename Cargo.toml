@@ -9,9 +9,9 @@ rtrb = "0.3"
 arc-swap = "1"
 arrayvec = "0.7"
 cpal = "0.17"
-log = "0.4"
+log = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["rt", "time"], default-features = false, optional = true }
 
 [features]
-default = ["frame-reader"]
-frame-reader = ["tokio"]
+default = [""]
+async = ["tokio"]
