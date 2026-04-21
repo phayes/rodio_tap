@@ -1,0 +1,16 @@
+[package]
+name = "rodio_tap"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rodio = "0.22"
+rtrb = "0.3"
+arc-swap = "1"
+arrayvec = "0.7"
+cpal = "0.17"
+log = "0.4"
+
+[features]
+default = ["frame-reader"]
+frame-reader = ["tokio"]
