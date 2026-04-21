@@ -285,6 +285,9 @@ impl AsyncFrameReader {
                     None => true,
                 };
                 if tap_changed {
+                    #[cfg(feature = "log")]
+                    log::trace!("AsyncFrameReader switching tap / tracks");
+
                     self.filled = 0; // drop partial to keep exact batch contract
                     let _ = self.try_attach_or_switch(tap);
                     continue;

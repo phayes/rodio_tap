@@ -216,11 +216,35 @@ pub struct TapReader {
 }
 
 impl TapReader {
+    /// Build a TapReader + TapAdapter pair.
+    pub fn new<S>(
+        decoder: S,
+    ) -> (Arc<TapReader>, TapAdapter<S>)
+    where
+        S: rodio::Source + Send + 'static,
+        S::Item: cpal::Sample + Send + 'static,
+        f32: cpal::FromSample<S::Item>,
+    {
+        Self::new_with_publish_target_inner(None, decoder)
+    }
+
     /// Build a TapReader + TapAdapter pair and wire publish-on-first-sample.
     ///
-    /// - `target` is the ArcSwap where the reader will be published on the first decoded sample.
-    pub fn new<S>(
-        target: &Arc<ArcSwapOption<TapReader>>,
+    /// - `publish_target` is the ArcSwap where the reader will be published on the first decoded sample.
+    pub fn new_with_publish_target<S>(
+        publish_target: &Arc<ArcSwapOption<TapReader>>,
+        decoder: S,
+    ) -> (Arc<TapReader>, TapAdapter<S>)
+    where
+        S: rodio::Source + Send + 'static,
+        S::Item: cpal::Sample + Send + 'static,
+        f32: cpal::FromSample<S::Item>,
+    {
+        Self::new_with_publish_target_inner(Some(publish_target), decoder)
+    }
+
+    fn new_with_publish_target_inner<S>(
+        publish_target: Option<&Arc<ArcSwapOption<TapReader>>>,
         decoder: S,
     ) -> (Arc<TapReader>, TapAdapter<S>)
     where
@@ -243,15 +267,14 @@ impl TapReader {
             channels: ch.into(),
         });
 
-        // Publish TapReader on first decoded sample (no locks on audio path)
-        let on_start = OnFirstSample {
+        let on_start = publish_target.map(|target| OnFirstSample {
             fired: AtomicBool::new(false),
             target: Arc::clone(target),
             tap: Arc::clone(&reader),
-        };
+        });
 
         // Writer side (for the mixer)
-        let adapter = TapAdapter::new(decoder, prod, ch.into(), Some(on_start));
+        let adapter = TapAdapter::new(decoder, prod, ch.into(), on_start);
 
         (reader, adapter)
     }
@@ -272,6 +295,21 @@ impl OnFirstSample {
             .is_ok()
         {
             self.target.store(Some(self.tap.clone()));
+
+            #[cfg(feature = "log")]
+            log::trace!("OnFirstSample published tap");
         }
+    }
+
+    pub fn is_fired(&self, order: Ordering) -> bool {
+        self.fired.load(order)
+    }
+
+    pub fn get_tap(&self) -> Arc<TapReader> {
+        self.tap.clone()
+    }
+
+    pub fn get_target(&self) -> Arc<ArcSwapOption<TapReader>> {
+        self.target.clone()
     }
 }
