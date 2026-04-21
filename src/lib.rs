@@ -1,8 +1,11 @@
 mod tap;
-pub use tap::*;
 use std::time::Duration;
+pub use tap::*;
 
-/// Configuration for the AsyncFrameReader
+/// Configuration shared by [`FrameReader`] and [`AsyncFrameReader`].
+///
+/// `FrameReader` is the default synchronous reader.
+/// `AsyncFrameReader` is available behind the `async` feature for Tokio/async runtimes.
 ///
 /// You must specify at least one of `ms_per_batch` or `frames_per_batch`
 pub struct FrameReaderConfig {
@@ -40,3 +43,6 @@ impl Default for FrameReaderConfig {
 mod async_frame_reader;
 #[cfg(feature = "async")]
 pub use async_frame_reader::*;
+
+pub mod frame_reader;
+pub use frame_reader::*;

@@ -1,6 +1,7 @@
 use arc_swap::ArcSwapOption;
 use arrayvec::ArrayVec;
 use cpal::Sample;
+use rodio::SampleRate;
 use rodio::source::SeekError;
 use rtrb::chunks::ChunkError;
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -9,9 +10,16 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use rodio::SampleRate;
 
-/// Taps PCM from an inner Source into a lock-free ring, preserving frame alignment.
+/// Adapts a `rodio::Source` and taps its PCM into a lock-free ring buffer.
+///
+/// This is the write side of the low-level tap API. It forwards all samples to the
+/// playback pipeline while mirroring `f32` samples into an `rtrb` ring buffer in
+/// frame-aligned chunks.
+///
+/// Most users should prefer [`crate::FrameReader`], which handles ring-buffer
+/// polling, pacing, and batch framing for you. For Tokio/async runtimes, enable
+/// the `async` feature and use [`crate::AsyncFrameReader`].
 pub struct TapAdapter<S: rodio::Source> {
     inner: S,
     prod: Producer<f32>,
@@ -209,17 +217,95 @@ impl<S: rodio::Source> Drop for TapAdapter<S> {
     }
 }
 
+/// Read side for samples produced by [`TapAdapter`].
+///
+/// # Low-level API warning
+///
+/// `TapReader`/`TapAdapter` are intentionally low-level building blocks:
+///
+/// - You are responsible for manually taking and polling the ring-buffer consumer.
+/// - You must preserve frame alignment when reading (`samples % channels == 0`).
+/// - You should decide your own pacing strategy to avoid busy waiting.
+///
+/// If you want a higher-level API with batching and built-in pacing, use
+/// [`crate::FrameReader`] instead. For Tokio/async runtimes, enable the `async`
+/// feature and use [`crate::AsyncFrameReader`].
+///
+/// # Example
+///
+/// ```no_run
+/// use rodio_tap::TapReader;
+///
+/// # fn run<S>(decoder: S)
+/// # where
+/// #     S: rodio::Source + Send + 'static,
+/// #     S::Item: cpal::Sample + Send + 'static,
+/// #     f32: cpal::FromSample<S::Item>,
+/// # {
+/// // Build the pair and feed `adapter` into your rodio playback chain.
+/// let (tap_reader, adapter) = TapReader::new(decoder);
+/// let _ = adapter;
+///
+/// // Take ownership of the consumer once.
+/// let mut consumer = tap_reader
+///     .consumer
+///     .lock()
+///     .expect("tap consumer lock poisoned")
+///     .take()
+///     .expect("tap consumer already taken");
+///
+/// let ch = tap_reader.channels as usize;
+///
+/// loop {
+///     let avail = consumer.slots();
+///     if avail < ch {
+///         // Not enough for one full frame yet; pick an app-specific wait strategy.
+///         std::thread::sleep(std::time::Duration::from_millis(1));
+///         continue;
+///     }
+///
+///     let want = avail - (avail % ch); // keep channel alignment
+///     let chunk = consumer.read_chunk(want).expect("read_chunk failed");
+///     let (a, b) = chunk.as_slices();
+///
+///     for frame in a.chunks_exact(ch) {
+///         // Process interleaved frame from first slice.
+///         let _ = frame;
+///     }
+///     for frame in b.chunks_exact(ch) {
+///         // Process interleaved frame from wrap-around slice.
+///         let _ = frame;
+///     }
+///
+///     // Commit exactly what you consumed.
+///     chunk.commit(want);
+/// }
+/// # }
+/// ```
 pub struct TapReader {
-    pub consumer: Mutex<Option<Consumer<f32>>>, // taken by consumer thread once
+    /// Single-use ring-buffer consumer.
+    ///
+    /// This is wrapped in `Mutex<Option<_>>` so one thread/task can take ownership once
+    /// and then poll it directly.
+    pub consumer: Mutex<Option<Consumer<f32>>>,
+    /// Sample rate of the tapped stream, in Hertz.
+    ///
+    /// This is copied from the wrapped source at construction time.
     pub sample_rate_hz: u32,
+    /// Number of interleaved channels in the tapped stream.
+    ///
+    /// Use this to preserve frame alignment when reading from `consumer`.
     pub channels: u16,
 }
 
 impl TapReader {
-    /// Build a TapReader + TapAdapter pair.
-    pub fn new<S>(
-        decoder: S,
-    ) -> (Arc<TapReader>, TapAdapter<S>)
+    /// Build a `TapReader` + `TapAdapter` pair.
+    ///
+    /// Use this when you want direct access to low-level tap primitives.
+    /// For higher-level batched reading with built-in pacing, prefer
+    /// [`crate::FrameReader`]. For Tokio/async runtimes, enable the `async`
+    /// feature and use [`crate::AsyncFrameReader`].
+    pub fn new<S>(decoder: S) -> (Arc<TapReader>, TapAdapter<S>)
     where
         S: rodio::Source + Send + 'static,
         S::Item: cpal::Sample + Send + 'static,

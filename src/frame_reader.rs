@@ -3,9 +3,9 @@ use rtrb::Consumer;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// High-level async reader for tapped PCM batches.
+/// High-level reader for tapped PCM batches.
 ///
-/// `AsyncFrameReader` wraps the low-level `TapReader` consumer loop and provides:
+/// `FrameReader` wraps the low-level `TapReader` consumer loop and provides:
 ///
 /// - automatic attach/switch when the active tap changes
 /// - frame-aligned ring-buffer reads
@@ -18,10 +18,12 @@ use std::time::Duration;
 /// - samples are laid out per frame (`[L, R, L, R, ...]` for stereo)
 /// - every delivered batch is channel-aligned
 ///
-/// Use this reader when integrating with a Tokio/async runtime.
-/// For most use cases, prefer the synchronous `FrameReader`.
-/// If you need direct ring-buffer control, use the lower-level `TapReader`/`TapAdapter` pair.
-pub struct AsyncFrameReader {
+/// This is the recommended API for most users. If you need direct ring-buffer control,
+/// use the lower-level `TapReader`/`TapAdapter` pair.
+///
+/// This reader is synchronous and blocks the current thread. Run it in a dedicated thread.
+/// For Tokio/async usage, enable the `async` feature and use `AsyncFrameReader`.
+pub struct FrameReader {
     tap_fn: Box<dyn Fn() -> Option<Arc<TapReader>> + Send + Sync>,
     config: FrameReaderConfig,
 
@@ -37,7 +39,7 @@ pub struct AsyncFrameReader {
     filled: usize,            // samples written so far (multiple of ch)
 }
 
-impl AsyncFrameReader {
+impl FrameReader {
     /// Create a reader with [`FrameReaderConfig::default`].
     ///
     /// The returned reader will call `tap_fn` to discover the currently active tap.
@@ -144,7 +146,7 @@ impl AsyncFrameReader {
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "AsyncFrameReader attached tap ({} ch @ {} Hz, {} frames/batch)",
+                        "FrameReader attached tap ({} ch @ {} Hz, {} frames/batch)",
                         tap.channels,
                         tap.sample_rate_hz,
                         self.batch_len_samples / self.ch
@@ -218,13 +220,13 @@ impl AsyncFrameReader {
     /// ```norun
     /// use std::sync::Arc;
     /// use arc_swap::ArcSwapOption;
-    /// use rodio_tap::AsyncFrameReader;
+    /// use rodio_tap::FrameReader;
     ///
     /// // Example: your app stores the current tap in ArcSwapOption.
     /// let current_tap = Arc::new(ArcSwapOption::empty());
     ///
     /// // Build reader that fetches the current tap each loop.
-    /// let mut reader = AsyncFrameReader::new({
+    /// let mut reader = FrameReader::new({
     ///     let current_tap = Arc::clone(&current_tap);
     ///     move || current_tap.load_full()
     /// });
@@ -248,20 +250,20 @@ impl AsyncFrameReader {
     ///         1000 * frames as u64 / sr as u64,
     ///         avgs
     ///     );
-    /// }).await;
+    /// });
     /// ```
-    pub async fn run<F>(&mut self, mut on_batch: F) -> !
+    pub fn run<F>(&mut self, mut on_batch: F) -> !
     where
         F: FnMut(&[f32], usize /*channels*/, u32 /*sr*/) + Send + 'static,
     {
         loop {
             if self.active_consumer.is_none() {
                 let Some(tap) = (self.tap_fn)() else {
-                    tokio::time::sleep(self.config.no_tap_sleep).await;
+                    std::thread::sleep(self.config.no_tap_sleep);
                     continue;
                 };
                 if !self.try_attach_or_switch(tap) {
-                    tokio::time::sleep(self.config.no_tap_sleep).await;
+                    std::thread::sleep(self.config.no_tap_sleep);
                     continue;
                 }
             }
@@ -337,7 +339,7 @@ impl AsyncFrameReader {
                 };
                 if tap_changed {
                     #[cfg(feature = "log")]
-                    log::trace!("AsyncFrameReader switching tap / tracks");
+                    log::trace!("FrameReader switching tap / tracks");
 
                     self.filled = 0; // drop partial to keep exact batch contract
                     let _ = self.try_attach_or_switch(tap);
@@ -348,13 +350,13 @@ impl AsyncFrameReader {
             // Pacing: if a batch is in-progress and we didn't fill it this turn, sleep a bit.
             if self.filled > 0 && !made_progress {
                 if let Some(d) = self.sleep_for_missing() {
-                    tokio::time::sleep(d).await;
+                    std::thread::sleep(d);
                     continue;
                 }
             }
 
             // Otherwise, be cooperative but eager.
-            tokio::task::yield_now().await;
+            std::thread::yield_now();
         }
     }
 }
