@@ -4,6 +4,8 @@
 
 Use it when you want to analyze, visualize, meter, or record playback data in real time.
 
+https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff
+
 ## What it provides
 
 - `TapReader` + `TapAdapter`: low-level ring-buffer access.
