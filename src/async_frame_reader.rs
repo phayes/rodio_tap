@@ -11,7 +11,7 @@ pub struct AsyncFrameReader {
 
     // live state
     active_consumer: Option<Consumer<f32>>,
-    active_generation: u32,
+    active_tap: Option<Arc<TapReader>>,
     ch: usize,
     sr: u32,
 
@@ -43,7 +43,7 @@ impl AsyncFrameReader {
             tap_fn: Box::new(tap_fn),
             config,
             active_consumer: None,
-            active_generation: 0,
+            active_tap: None,
             ch: 0,
             sr: 0,
             batch_buf: Vec::new(),
@@ -92,21 +92,25 @@ impl AsyncFrameReader {
         self.filled = 0;
     }
 
-    /// Attach to current tap or switch if generation changed.
+    /// Attach to current tap or switch if the current tap changed.
     fn try_attach_or_switch(&mut self, tap: Arc<TapReader>) -> bool {
-        if self.active_consumer.is_none() || tap.generation != self.active_generation {
+        let tap_changed = match &self.active_tap {
+            Some(active) => !Arc::ptr_eq(active, &tap),
+            None => true,
+        };
+
+        if self.active_consumer.is_none() || tap_changed {
             if let Ok(mut slot) = tap.consumer.lock() {
                 if let Some(cons) = slot.take() {
                     self.active_consumer = Some(cons);
-                    self.active_generation = tap.generation;
+                    self.active_tap = Some(Arc::clone(&tap));
                     self.ch = tap.channels as usize;
                     self.sr = tap.sample_rate_hz;
                     self.recompute_batch_size();
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "AsyncFrameReader attached gen {} ({} ch @ {} Hz, {} frames/batch)",
-                        tap.generation,
+                        "AsyncFrameReader attached tap ({} ch @ {} Hz, {} frames/batch)",
                         tap.channels,
                         tap.sample_rate_hz,
                         self.batch_len_samples / self.ch
@@ -115,6 +119,7 @@ impl AsyncFrameReader {
                 }
             }
             self.active_consumer = None;
+            self.active_tap = None;
         }
         false
     }
@@ -127,7 +132,6 @@ impl AsyncFrameReader {
                 &[f32],
                 usize,       /*channels*/
                 u32,         /*sr*/
-                u32,         /*generation*/
             ) + Send
             + 'static,
     {
@@ -141,12 +145,7 @@ impl AsyncFrameReader {
             take -= n;
 
             if self.filled == self.batch_len_samples {
-                on_batch(
-                    &self.batch_buf,
-                    self.ch,
-                    self.sr,
-                    self.active_generation,
-                );
+                on_batch(&self.batch_buf, self.ch, self.sr);
                 self.filled = 0;
             }
         }
@@ -184,7 +183,7 @@ impl AsyncFrameReader {
     ///  // Aim for ~33 ms batches regardless of sr/ch
     ///  let mut reader = AsyncFrameReader::new(|| tap.clone());
     ///
-    /// reader.run(|batch, ch, sr, gen| {
+    /// reader.run(|batch, ch, sr| {
     ///    let frames = batch.len() / ch;
     ///    // example: per-channel averages across this time slice
     ///    let mut sums = vec![0.0f32; ch];
@@ -192,8 +191,8 @@ impl AsyncFrameReader {
     ///        for (i, &s) in frame.iter().enumerate() { sums[i] += s; }
     ///    }
     ///    let avgs: Vec<f32> = sums.into_iter().map(|s| s / frames as f32).collect();
-    ///    println!("[gen {} @ {}Hz] ~{} ms ({} frames) | avg/ch = {:?}",
-    ///             gen, sr, 1000 * frames as u64 / sr as u64, frames, avgs);
+    ///    println!("[{}Hz] ~{} ms ({} frames) | avg/ch = {:?}",
+    ///             sr, 1000 * frames as u64 / sr as u64, frames, avgs);
     /// }).await;
     pub async fn run<F>(&mut self, mut on_batch: F) -> !
     where
@@ -201,7 +200,6 @@ impl AsyncFrameReader {
                 &[f32],
                 usize,       /*channels*/
                 u32,         /*sr*/
-                u32,         /*gen*/
             ) + Send
             + 'static,
     {
@@ -282,7 +280,11 @@ impl AsyncFrameReader {
 
             // Track boundary: reattach & recompute batch size; drop partial batch.
             if let Some(tap) = (self.tap_fn)() {
-                if tap.generation != self.active_generation {
+                let tap_changed = match &self.active_tap {
+                    Some(active) => !Arc::ptr_eq(active, &tap),
+                    None => true,
+                };
+                if tap_changed {
                     self.filled = 0; // drop partial to keep exact batch contract
                     let _ = self.try_attach_or_switch(tap);
                     continue;

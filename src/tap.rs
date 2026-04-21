@@ -213,17 +213,14 @@ pub struct TapReader {
     pub consumer: Mutex<Option<Consumer<f32>>>, // taken by consumer thread once
     pub sample_rate_hz: u32,
     pub channels: u16,
-    pub generation: u32,
 }
 
 impl TapReader {
     /// Build a TapReader + TapAdapter pair and wire publish-on-first-sample.
     ///
     /// - `target` is the ArcSwap where the reader will be published on the first decoded sample.
-    /// - `generation_ctr` is the player's AtomicU32 generation counter.
     pub fn new<S>(
         target: &Arc<ArcSwapOption<TapReader>>,
-        generation: u32,
         decoder: S,
     ) -> (Arc<TapReader>, TapAdapter<S>)
     where
@@ -244,7 +241,6 @@ impl TapReader {
             consumer: Mutex::new(Some(cons)),
             sample_rate_hz: sr.into(),
             channels: ch.into(),
-            generation,
         });
 
         // Publish TapReader on first decoded sample (no locks on audio path)
