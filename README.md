@@ -38,12 +38,12 @@ use std::thread;
 use rodio::Decoder;
 use rodio_tap::{FrameReader, TapReader};
 
-# fn run<S>(rodio_source: S)
-# where
-#     S: rodio::Source + Send + 'static,
-#     S::Item: cpal::Sample + Send + 'static,
-#     f32: cpal::FromSample<S::Item>,
-# {
+fn run<S>(rodio_source: S)
+where
+     S: rodio::Source + Send + 'static,
+     S::Item: cpal::Sample + Send + 'static,
+     f32: cpal::FromSample<S::Item>,
+{
 let (tap_reader, tap_adapter) = TapReader::<2>::new(rodio_source);
 
 // Send `tap_adapter` into your rodio playback pipeline.
@@ -63,7 +63,7 @@ thread::spawn(move || {
         }
     });
 });
-# }
+}
 ```
 
 When stream format changes (sample rate / channel count) inside a tap, `FrameReader`
