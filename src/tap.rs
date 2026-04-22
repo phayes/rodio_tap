@@ -1,13 +1,13 @@
 use arc_swap::ArcSwapOption;
 use arrayvec::ArrayVec;
 use cpal::Sample;
-use rodio::source::SeekError;
 use rodio::SampleRate;
+use rodio::source::SeekError;
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// Runtime audio format metadata for tapped packets.
@@ -45,14 +45,14 @@ impl<const C: usize> Default for TapPacket<C> {
     }
 }
 
-/// Adapts a `rodio::Source` and taps packets into a lock-free ring buffer. 
+/// Adapts a `rodio::Source` and taps packets into a lock-free ring buffer.
 ///
 /// This is the write side of the low-level tap API. It forwards all samples to the
 /// playback pipeline while mirroring packets into an `rtrb` ring:
 /// - `TapPacket::Format` announces the active format.
 /// - `TapPacket::Frame` carries one interleaved frame (up to `C` channels).
 ///
-/// TapAdapter is generic over C: the maximum number of channels supported. 
+/// TapAdapter is generic over C: the maximum number of channels supported.
 /// If the source reports more channels than `C`, extra channels are dropped.
 pub struct TapAdapter<S: rodio::Source, const C: usize = 2> {
     inner: S,
@@ -177,7 +177,9 @@ impl<S: rodio::Source, const C: usize> TapAdapter<S, C> {
         let new_out_channels = new_src_channels.min(C).max(1);
         let new_sample_rate_hz: u32 = self.inner.sample_rate().into();
 
-        if new_out_channels != self.active_out_channels || new_sample_rate_hz != self.active_sample_rate_hz {
+        if new_out_channels != self.active_out_channels
+            || new_sample_rate_hz != self.active_sample_rate_hz
+        {
             self.format_dirty = true;
         }
 
@@ -432,9 +434,9 @@ impl<const C: usize> OnFirstSample<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rodio::Source;
     use std::collections::VecDeque;
     use std::num::NonZero;
-    use rodio::Source;
 
     #[derive(Clone)]
     struct SpanChunk {

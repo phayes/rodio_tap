@@ -88,12 +88,12 @@ impl<const C: usize> AsyncFrameReader<C> {
             if self.sr == 0 {
                 1
             } else {
-                let batch_duration = self
-                .config
-                .time_per_batch
-                .expect("FrameReaderConfig must set time_per_batch when frames_per_batch is not set");
+                let batch_duration = self.config.time_per_batch.expect(
+                    "FrameReaderConfig must set time_per_batch when frames_per_batch is not set",
+                );
                 // frames = round(sr * duration_secs)
-                ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000) as usize
+                ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000)
+                    as usize
             }
         }
         .max(1);

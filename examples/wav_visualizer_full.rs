@@ -90,7 +90,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             time_per_batch: Some(Duration::from_millis(33)),
             ..Default::default()
         };
-        let mut frame_reader = FrameReader::<2>::new_with_config(config, move || tap_fn_for_reader());
+        let mut frame_reader =
+            FrameReader::<2>::new_with_config(config, move || tap_fn_for_reader());
 
         frame_reader.run(move |batch, channels, sample_rate_hz| {
             if channels == 0 || batch.is_empty() {
@@ -133,12 +134,7 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn Error>> {
             "--single_tap" => mode = TapMode::SingleTap,
             "--one_tap_per_track" => mode = TapMode::OneTapPerTrack,
             flag if flag.starts_with("--") => {
-                return Err(format!(
-                    "Unknown flag: {}\n\n{}",
-                    flag,
-                    usage_text(&program)
-                )
-                .into());
+                return Err(format!("Unknown flag: {}\n\n{}", flag, usage_text(&program)).into());
             }
             _ => paths.push(PathBuf::from(arg)),
         }

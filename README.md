@@ -187,3 +187,10 @@ There is also a simplified, abstraction-first example using the visualizer API:
 ```bash
 cargo run --example wav_visualizer_simple --features visualizer -- examples/example.wav
 ```
+
+And a recorder example that queues one or more WAV files, captures frames with
+`FrameReader`, and writes a single output WAV.
+
+```bash
+cargo run --example wav_recorder -- examples/example.wav examples/sweep.wav
+```

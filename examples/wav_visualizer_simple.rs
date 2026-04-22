@@ -1,7 +1,5 @@
 use rodio::{Decoder, DeviceSinkBuilder, Player};
-use rodio_tap::{
-    TapReader, Visualizer, VisualizerConfig,
-};
+use rodio_tap::{TapReader, Visualizer, VisualizerConfig};
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufReader, Write};

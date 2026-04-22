@@ -1,4 +1,4 @@
-use crate::{FrameReaderConfig, FrameFormat, TapPacket, TapReader};
+use crate::{FrameFormat, FrameReaderConfig, TapPacket, TapReader};
 use arrayvec::ArrayVec;
 use rtrb::Consumer;
 use std::sync::Arc;
@@ -91,12 +91,12 @@ impl<const C: usize> FrameReader<C> {
                 // We may attach before seeing the first Format packet.
                 1
             } else {
-            let batch_duration = self
-                .config
-                .time_per_batch
-                .expect("FrameReaderConfig must set time_per_batch when frames_per_batch is not set");
-            // frames = round(sr * duration_secs)
-            ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000) as usize
+                let batch_duration = self.config.time_per_batch.expect(
+                    "FrameReaderConfig must set time_per_batch when frames_per_batch is not set",
+                );
+                // frames = round(sr * duration_secs)
+                ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000)
+                    as usize
             }
         }
         .max(1);
@@ -184,7 +184,9 @@ impl<const C: usize> FrameReader<C> {
         // Late attach can observe frames before the first format packet.
         if !self.has_format {
             #[cfg(feature = "log")]
-            log::debug!("FrameReader dropping frame because it has not received a format packet yet");
+            log::debug!(
+                "FrameReader dropping frame because it has not received a format packet yet"
+            );
             return;
         }
 

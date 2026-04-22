@@ -72,9 +72,9 @@
 //! }
 //! ```
 
-use crate::{FrameReader, FrameReaderConfig, TapReader};
 #[cfg(feature = "async")]
 use crate::AsyncFrameReader;
+use crate::{FrameReader, FrameReaderConfig, TapReader};
 use arrayvec::ArrayVec;
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
@@ -172,11 +172,7 @@ impl VisualizerConfig {
     /// Returned bands are log-spaced and stable for the lifetime of the config.
     /// Magnitudes are not included here; they are emitted in `ChannelSpectrum.bins`.
     pub fn frequency_bins(&self) -> Vec<FrequencyBin> {
-        let edges = compute_log_edges(
-            self.min_frequency_hz,
-            self.max_frequency_hz,
-            self.num_bands,
-        );
+        let edges = compute_log_edges(self.min_frequency_hz, self.max_frequency_hz, self.num_bands);
         edges_to_frequency_bins(&edges)
     }
 }

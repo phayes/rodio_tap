@@ -21,6 +21,7 @@ rustfft = { version = "6", optional = true }
 
 [dev-dependencies]
 rustfft = "6"
+hound = "3"
 
 [features]
 async = ["tokio"]
@@ -33,3 +34,7 @@ path = "examples/wav_visualizer_full.rs"
 [[example]]
 name = "wav_visualizer_simple"
 required-features = ["visualizer"]
+
+[[example]]
+name = "wav_recorder"
+path = "examples/wav_recorder.rs"
