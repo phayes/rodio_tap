@@ -24,7 +24,7 @@ pub struct FrameFormat {
 /// - Whenever format changes, a new `Format` packet is emitted before the first `Frame`.
 /// - `Frame.len()` is always `<= C`, and equals the active format channels for this tap.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TapPacket<const C: usize> {
+pub enum TapPacket<const C: usize = 2> {
     /// Format packet announces the current `{channels, sample_rate_hz}`.
     Format(FrameFormat),
     /// Frame packet carries one interleaved frame (up to `C` channels).
@@ -34,7 +34,10 @@ pub enum TapPacket<const C: usize> {
 
 impl<const C: usize> Default for TapPacket<C> {
     fn default() -> Self {
-        let channels = if C == 0 { 0 } else { 1 };
+        if C == 0 {
+            panic!("TapPacket requires generic C > 0");
+        }
+        let channels = C.max(1) as u8;
         TapPacket::Format(FrameFormat {
             channels,
             sample_rate_hz: 48_000,
@@ -286,13 +289,13 @@ impl<S: rodio::Source, const C: usize> Drop for TapAdapter<S, C> {
 /// ```no_run
 /// use rodio_tap::{TapPacket, TapReader};
 ///
-/// # fn run<S>(decoder: S)
-/// # where
-/// #     S: rodio::Source + Send + 'static,
-/// #     S::Item: cpal::Sample + Send + 'static,
-/// #     f32: cpal::FromSample<S::Item>,
-/// # {
-/// let (tap_reader, adapter) = TapReader::new(decoder);
+/// fn run<S>(decoder: S)
+/// where
+///     S: rodio::Source + Send + 'static,
+///     S::Item: cpal::Sample + Send + 'static,
+///     f32: cpal::FromSample<S::Item>,
+/// {
+/// let (tap_reader, adapter) = TapReader::<2>::new(decoder);
 /// let _ = adapter;
 ///
 /// let mut consumer = tap_reader
@@ -312,19 +315,22 @@ impl<S: rodio::Source, const C: usize> Drop for TapAdapter<S, C> {
 ///     }
 ///
 ///     let chunk = consumer.read_chunk(avail).expect("read_chunk failed");
-///     let (a, b) = chunk.as_slices();
+///     let (a_len, b_len) = {
+///         let (a, b) = chunk.as_slices();
 ///
-///     for packet in a.iter().chain(b.iter()) {
-///         match packet {
-///             TapPacket::<2>::Format(fmt) => current_format = Some(*fmt),
-///             TapPacket::<2>::Frame(frame) => {
-///                 let _ = (frame, current_format);
-///                 // Process one interleaved frame for the active format.
+///         for packet in a.iter().chain(b.iter()) {
+///             match packet {
+///                 TapPacket::<2>::Format(fmt) => current_format = Some(*fmt),
+///                 TapPacket::<2>::Frame(frame) => {
+///                     let _ = (frame, current_format);
+///                     // Process one interleaved frame for the active format.
+///                 }
 ///             }
 ///         }
-///     }
+///         (a.len(), b.len())
+///     };
 ///
-///     chunk.commit(a.len() + b.len());
+///     chunk.commit(a_len + b_len);
 /// }
 /// # }
 /// ```
@@ -334,10 +340,6 @@ pub struct TapReader<const C: usize = 2> {
     /// This is wrapped in `Mutex<Option<_>>` so one thread/task can take ownership once
     /// and then poll it directly.
     pub consumer: Mutex<Option<Consumer<TapPacket<C>>>>,
-    /// Initial sample rate of the tapped stream, in Hertz.
-    pub sample_rate_hz: u32,
-    /// Initial number of channels exposed to packets (`<= C`).
-    pub channels: u16,
 }
 
 impl<const C: usize> TapReader<C> {
@@ -375,17 +377,11 @@ impl<const C: usize> TapReader<C> {
     {
         assert!(C > 0, "TapReader requires C > 0");
 
-        let sr = decoder.sample_rate();
-        let ch = decoder.channels().get() as usize;
-        let ch_out = ch.min(C).max(1) as u16;
-
         let cap = 65_536;
         let (prod, cons) = RingBuffer::<TapPacket<C>>::new(cap);
 
         let reader = Arc::new(TapReader {
             consumer: Mutex::new(Some(cons)),
-            sample_rate_hz: sr.into(),
-            channels: ch_out,
         });
 
         let on_start = publish_target.map(|target| OnFirstSample {

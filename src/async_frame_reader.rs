@@ -1,43 +1,45 @@
-use crate::{FrameReaderConfig, TapReader};
+use crate::{FrameFormat, FrameReaderConfig, TapPacket, TapReader};
+use arrayvec::ArrayVec;
 use rtrb::Consumer;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// High-level async reader for tapped PCM batches.
+/// High-level async reader for tapped frame batches.
 ///
 /// `AsyncFrameReader` wraps the low-level `TapReader` consumer loop and provides:
 ///
 /// - automatic attach/switch when the active tap changes
-/// - frame-aligned ring-buffer reads
+/// - packet-based ring-buffer reads (`TapPacket::Format` / `TapPacket::Frame`)
 /// - configurable batch sizing (time-based or frame-count-based)
 /// - cooperative pacing to avoid busy-spin when data is incomplete
 ///
-/// The callback receives interleaved `f32` PCM where:
+/// The callback receives frame batches where each frame is an interleaved
+/// `ArrayVec<f32, C>`:
 ///
-/// - `batch.len() == frames_per_batch * channels`
-/// - samples are laid out per frame (`[L, R, L, R, ...]` for stereo)
-/// - every delivered batch is channel-aligned
+/// - usually `batch.len() == frames_per_batch`
+/// - each frame length is `channels` for that callback
+/// - on in-band format change, a partial batch may be emitted before switching format
 ///
 /// Use this reader when integrating with a Tokio/async runtime.
 /// For most use cases, prefer the synchronous `FrameReader`.
 /// If you need direct ring-buffer control, use the lower-level `TapReader`/`TapAdapter` pair.
-pub struct AsyncFrameReader {
-    tap_fn: Box<dyn Fn() -> Option<Arc<TapReader>> + Send + Sync>,
+pub struct AsyncFrameReader<const C: usize = 2> {
+    tap_fn: Box<dyn Fn() -> Option<Arc<TapReader<C>>> + Send + Sync>,
     config: FrameReaderConfig,
 
     // live state
-    active_consumer: Option<Consumer<f32>>,
-    active_tap: Option<Arc<TapReader>>,
+    active_consumer: Option<Consumer<TapPacket<C>>>,
+    active_tap: Option<Arc<TapReader<C>>>,
     ch: usize,
     sr: u32,
+    has_format: bool,
 
-    // batch buffer (interleaved)
-    batch_buf: Vec<f32>,
-    batch_len_samples: usize, // = frames_per_batch * ch (recomputed per tap)
-    filled: usize,            // samples written so far (multiple of ch)
+    // batch buffer (interleaved frames)
+    batch_buf: Vec<ArrayVec<f32, C>>,
+    batch_len_frames: usize,
 }
 
-impl AsyncFrameReader {
+impl<const C: usize> AsyncFrameReader<C> {
     /// Create a reader with [`FrameReaderConfig::default`].
     ///
     /// The returned reader will call `tap_fn` to discover the currently active tap.
@@ -45,7 +47,7 @@ impl AsyncFrameReader {
     /// a different one when playback switches.
     pub fn new<G>(tap_fn: G) -> Self
     where
-        G: Fn() -> Option<Arc<TapReader>> + Send + Sync + 'static,
+        G: Fn() -> Option<Arc<TapReader<C>>> + Send + Sync + 'static,
     {
         let config = FrameReaderConfig::default();
         Self::new_with_config(config, tap_fn)
@@ -53,15 +55,16 @@ impl AsyncFrameReader {
 
     /// Create a reader with an explicit [`FrameReaderConfig`].
     ///
-    /// At least one of `frames_per_batch` or `ms_per_batch` must be set in the config.
+    /// At least one of `frames_per_batch` or `time_per_batch` must be set in the config.
     /// If both are set, `frames_per_batch` takes precedence.
     pub fn new_with_config<G>(config: FrameReaderConfig, tap_fn: G) -> Self
     where
-        G: Fn() -> Option<Arc<TapReader>> + Send + Sync + 'static,
+        G: Fn() -> Option<Arc<TapReader<C>>> + Send + Sync + 'static,
     {
+        assert!(C > 0, "AsyncFrameReader requires C > 0");
         assert!(
-            config.frames_per_batch.is_some() || config.ms_per_batch.is_some(),
-            "FrameReaderConfig requires at least one batch target: frames_per_batch or ms_per_batch"
+            config.frames_per_batch.is_some() || config.time_per_batch.is_some(),
+            "FrameReaderConfig requires at least one batch target: frames_per_batch or time_per_batch"
         );
 
         Self {
@@ -71,63 +74,35 @@ impl AsyncFrameReader {
             active_tap: None,
             ch: 0,
             sr: 0,
+            has_format: false,
             batch_buf: Vec::new(),
-            batch_len_samples: 0,
-            filled: 0,
+            batch_len_frames: 0,
         }
-    }
-
-    /// Set the maximum number of samples requested from the ring per read attempt.
-    ///
-    /// Larger values can improve throughput, while smaller values can reduce per-iteration
-    /// latency and callback burst size.
-    pub fn with_max_per_read_samples(mut self, n: usize) -> Self {
-        self.config.max_per_read_samples = n;
-        self
-    }
-
-    /// Set sleep duration used when no active tap is available.
-    pub fn with_no_tap_sleep(mut self, d: Duration) -> Self {
-        self.config.no_tap_sleep = d;
-        self
-    }
-
-    /// Set pacing bias used to predict sleep while a batch is partially filled.
-    ///
-    /// Expected range is `0.0 < bias <= 1.0`.
-    pub fn with_sleep_bias(mut self, bias_0to1: f32) -> Self {
-        self.config.sleep_bias = bias_0to1;
-        self
-    }
-
-    /// Clamp the pacing sleep between `min` and `max`.
-    pub fn with_sleep_clamp(mut self, min: Duration, max: Duration) -> Self {
-        self.config.min_sleep = min;
-        self.config.max_sleep = max;
-        self
     }
 
     #[inline]
     fn recompute_batch_size(&mut self) {
-        let frames = if let Some(frames) = self.config.frames_per_batch {
+        self.batch_len_frames = if let Some(frames) = self.config.frames_per_batch {
             frames as usize
         } else {
-            let ms = self
+            if self.sr == 0 {
+                1
+            } else {
+                let batch_duration = self
                 .config
-                .ms_per_batch
-                .expect("FrameReaderConfig must set ms_per_batch when frames_per_batch is not set");
-            // frames = round(sr * ms / 1000)
-            ((self.sr as u64 * ms as u64 + 500) / 1000) as usize
+                .time_per_batch
+                .expect("FrameReaderConfig must set time_per_batch when frames_per_batch is not set");
+                // frames = round(sr * duration_secs)
+                ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000) as usize
+            }
         }
         .max(1);
-        let samples = frames * self.ch;
-        self.batch_len_samples = samples.max(self.ch); // ensure ≥ one frame
-        self.batch_buf.resize(self.batch_len_samples, 0.0);
-        self.filled = 0;
+        self.batch_buf.clear();
+        self.batch_buf.reserve(self.batch_len_frames);
     }
 
     /// Attach to current tap or switch if the current tap changed.
-    fn try_attach_or_switch(&mut self, tap: Arc<TapReader>) -> bool {
+    fn try_attach_or_switch(&mut self, tap: Arc<TapReader<C>>) -> bool {
         let tap_changed = match &self.active_tap {
             Some(active) => !Arc::ptr_eq(active, &tap),
             None => true,
@@ -138,17 +113,13 @@ impl AsyncFrameReader {
                 if let Some(cons) = slot.take() {
                     self.active_consumer = Some(cons);
                     self.active_tap = Some(Arc::clone(&tap));
-                    self.ch = tap.channels as usize;
-                    self.sr = tap.sample_rate_hz;
+                    self.ch = 0;
+                    self.sr = 0;
+                    self.has_format = false;
                     self.recompute_batch_size();
 
                     #[cfg(feature = "log")]
-                    log::debug!(
-                        "AsyncFrameReader attached tap ({} ch @ {} Hz, {} frames/batch)",
-                        tap.channels,
-                        tap.sample_rate_hz,
-                        self.batch_len_samples / self.ch
-                    );
+                    log::debug!("AsyncFrameReader attached tap (awaiting first Format packet)");
                     return true;
                 }
             }
@@ -158,25 +129,73 @@ impl AsyncFrameReader {
         false
     }
 
-    /// Copy `take` samples from `src` into the batch; invoke `on_batch` on each full batch.
     #[inline]
-    fn ingest<F>(&mut self, mut src: &[f32], mut take: usize, on_batch: &mut F)
+    fn emit_batch<F>(&mut self, on_batch: &mut F)
     where
-        F: FnMut(&[f32], usize /*channels*/, u32 /*sr*/) + Send + 'static,
+        F: FnMut(&[ArrayVec<f32, C>], usize /*channels*/, u32 /*sr*/),
     {
-        debug_assert_eq!(take % self.ch, 0);
-        while take > 0 {
-            let room = self.batch_len_samples - self.filled;
-            let n = room.min(take);
-            self.batch_buf[self.filled..self.filled + n].copy_from_slice(&src[..n]);
-            self.filled += n;
-            src = &src[n..];
-            take -= n;
+        if self.batch_buf.is_empty() {
+            return;
+        }
+        on_batch(&self.batch_buf, self.ch, self.sr);
+        self.batch_buf.clear();
+    }
 
-            if self.filled == self.batch_len_samples {
-                on_batch(&self.batch_buf, self.ch, self.sr);
-                self.filled = 0;
-            }
+    #[inline]
+    fn handle_format<F>(&mut self, fmt: FrameFormat, on_batch: &mut F)
+    where
+        F: FnMut(&[ArrayVec<f32, C>], usize /*channels*/, u32 /*sr*/),
+    {
+        let new_ch = fmt.channels as usize;
+        if new_ch == 0 || new_ch > C {
+            #[cfg(feature = "log")]
+            log::debug!(
+                "AsyncFrameReader ignoring invalid format packet ({} ch @ {} Hz)",
+                fmt.channels,
+                fmt.sample_rate_hz
+            );
+            return;
+        }
+
+        let format_changed = !self.has_format || self.ch != new_ch || self.sr != fmt.sample_rate_hz;
+        if !format_changed {
+            return;
+        }
+
+        if self.has_format && !self.batch_buf.is_empty() {
+            // On in-band format changes, emit the partial batch in the old format.
+            self.emit_batch(on_batch);
+        }
+
+        self.ch = new_ch;
+        self.sr = fmt.sample_rate_hz;
+        self.has_format = true;
+        self.recompute_batch_size();
+    }
+
+    #[inline]
+    fn handle_frame<F>(&mut self, frame: &ArrayVec<f32, C>, on_batch: &mut F)
+    where
+        F: FnMut(&[ArrayVec<f32, C>], usize /*channels*/, u32 /*sr*/),
+    {
+        // Late attach can observe frames before the first format packet.
+        if !self.has_format {
+            return;
+        }
+
+        if frame.len() != self.ch {
+            #[cfg(feature = "log")]
+            log::debug!(
+                "AsyncFrameReader dropping frame with len {} (expected {})",
+                frame.len(),
+                self.ch
+            );
+            return;
+        }
+
+        self.batch_buf.push(frame.clone());
+        if self.batch_buf.len() == self.batch_len_frames {
+            self.emit_batch(on_batch);
         }
     }
 
@@ -186,11 +205,13 @@ impl AsyncFrameReader {
         if self.active_consumer.is_none() || self.sr == 0 || self.ch == 0 {
             return None;
         }
-        let missing = self.batch_len_samples - self.filled; // samples
-        if missing < self.ch {
+        if self.batch_buf.len() >= self.batch_len_frames {
             return None;
-        } // less than one full frame missing → just yield
-        let missing_frames = missing / self.ch; // integer frames
+        }
+        let missing_frames = self.batch_len_frames - self.batch_buf.len();
+        if missing_frames == 0 {
+            return None;
+        }
         // time = frames / sr seconds
         let nanos_f = (missing_frames as f64 / self.sr as f64)
             * 1_000_000_000.0
@@ -205,36 +226,38 @@ impl AsyncFrameReader {
         Some(d)
     }
 
-    /// Run forever and deliver full, channel-aligned batches to `on_batch`.
+    /// Run forever and deliver frame batches to `on_batch`.
     ///
-    /// The callback is invoked only for complete batches. Partial data is buffered
-    /// internally until enough samples arrive.
+    /// The callback is usually invoked for complete batches. If an in-band format change
+    /// arrives while a batch is in progress, the partial batch is emitted before the
+    /// new format starts.
     ///
-    /// The chunks are interleaved. Use `batch.chunks_exact(ch)` to iterate per-frame.
+    /// Each item in `batch` is one interleaved frame (`ArrayVec<f32, C>`) with length `ch`.
     ///
     /// If `tap_fn` reports a different tap (for example, track switch), any partial batch
-    /// in progress is dropped to preserve the exact batch-size contract.
+    /// in progress is dropped.
     ///
-    /// ```norun
+    /// ```no_run
     /// use std::sync::Arc;
+    /// use arrayvec::ArrayVec;
     /// use arc_swap::ArcSwapOption;
-    /// use rodio_tap::AsyncFrameReader;
+    /// use rodio_tap::{AsyncFrameReader, TapReader};
     ///
     /// // Example: your app stores the current tap in ArcSwapOption.
-    /// let current_tap = Arc::new(ArcSwapOption::empty());
+    /// let current_tap = Arc::new(ArcSwapOption::<TapReader<2>>::empty());
     ///
     /// // Build reader that fetches the current tap each loop.
-    /// let mut reader = AsyncFrameReader::new({
+    /// let mut reader = AsyncFrameReader::<2>::new({
     ///     let current_tap = Arc::clone(&current_tap);
     ///     move || current_tap.load_full()
     /// });
     ///
-    /// // Drive the reader and process channel-interleaved batches.
+    /// // Drive the reader and process frame batches.
     /// reader.run(|batch, ch, sr| {
-    ///     let frames = batch.len() / ch;
+    ///     let frames = batch.len();
     ///     let mut sums = vec![0.0f32; ch];
     ///
-    ///     for frame in batch.chunks_exact(ch) {
+    ///     for frame in batch {
     ///         for (i, &s) in frame.iter().enumerate() {
     ///             sums[i] += s;
     ///         }
@@ -252,7 +275,7 @@ impl AsyncFrameReader {
     /// ```
     pub async fn run<F>(&mut self, mut on_batch: F) -> !
     where
-        F: FnMut(&[f32], usize /*channels*/, u32 /*sr*/) + Send + 'static,
+        F: FnMut(&[ArrayVec<f32, C>], usize /*channels*/, u32 /*sr*/) + Send + 'static,
     {
         loop {
             if self.active_consumer.is_none() {
@@ -278,7 +301,11 @@ impl AsyncFrameReader {
                         break;
                     }
 
-                    let want = avail.min(self.config.max_per_read_samples);
+                    // Prefer reading roughly one callback worth of packets at a time.
+                    // Add one packet of slack to accommodate an in-band `Format` packet.
+                    let missing_frames = self.batch_len_frames.saturating_sub(self.batch_buf.len());
+                    let target_packets = missing_frames.max(1).saturating_add(1);
+                    let want = avail.min(target_packets);
                     let Ok(chunk) = cons.read_chunk(want) else {
                         break;
                     };
@@ -289,40 +316,16 @@ impl AsyncFrameReader {
                         break;
                     }
 
-                    // Keep alignment: only commit multiples of channels.
-                    let aligned = total - (total % self.ch);
-                    if aligned == 0 {
-                        break;
-                    } // not enough for a full frame yet
-
-                    // Portion inside A
-                    let a_take = a.len().min(aligned);
-                    let a_aligned = a_take - (a_take % self.ch);
-                    if a_aligned > 0 {
-                        self.ingest(&a[..a_aligned], a_aligned, &mut on_batch);
+                    for packet in a.iter().chain(b.iter()) {
+                        match packet {
+                            TapPacket::Format(fmt) => self.handle_format(*fmt, &mut on_batch),
+                            TapPacket::Frame(frame) => self.handle_frame(frame, &mut on_batch),
+                        }
+                        made_progress = true;
                     }
 
-                    // Portion inside B
-                    let b_take = aligned - a_aligned; // multiple of ch
-                    if b_take > 0 {
-                        self.ingest(&b[..b_take], b_take, &mut on_batch);
-                    }
-
-                    // Advance by an aligned amount only.
-                    chunk.commit(aligned);
-                    made_progress = true;
-
-                    // If we left an unaligned tail (< ch), wait for more data.
-                    if aligned < total {
-                        break;
-                    }
-
-                    // If we can immediately produce more, keep looping (no sleep).
-                    if self.filled == 0 {
-                        continue; // delivered a full batch; try for another
-                    } else {
-                        break; // batch in progress; drop to pacing logic
-                    }
+                    // Commit all packets we processed from this chunk.
+                    chunk.commit(total);
                 }
 
                 // Put the consumer back.
@@ -339,14 +342,15 @@ impl AsyncFrameReader {
                     #[cfg(feature = "log")]
                     log::trace!("AsyncFrameReader switching tap / tracks");
 
-                    self.filled = 0; // drop partial to keep exact batch contract
+                    self.batch_buf.clear(); // drop partial across taps
+                    self.has_format = false;
                     let _ = self.try_attach_or_switch(tap);
                     continue;
                 }
             }
 
             // Pacing: if a batch is in-progress and we didn't fill it this turn, sleep a bit.
-            if self.filled > 0 && !made_progress {
+            if !self.batch_buf.is_empty() && !made_progress {
                 if let Some(d) = self.sleep_for_missing() {
                     tokio::time::sleep(d).await;
                     continue;

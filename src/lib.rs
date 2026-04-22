@@ -7,34 +7,57 @@ pub use tap::*;
 /// `FrameReader` is the default synchronous reader.
 /// `AsyncFrameReader` is available behind the `async` feature for Tokio/async runtimes.
 ///
-/// You must specify at least one of `ms_per_batch` or `frames_per_batch`
+/// You must specify at least one of `time_per_batch` or `frames_per_batch`
 pub struct FrameReaderConfig {
-    /// target batch duration (e.g., Some(10) = ~10 ms)
-    pub ms_per_batch: Option<u32>,
-    /// preferred fixed frame count per batch
+    /// Target batch duration.
+    ///
+    /// Default: `Some(Duration::from_millis(10))`.
+    pub time_per_batch: Option<Duration>,
+    /// Preferred fixed frame count per batch.
+    ///
+    /// If set, this takes precedence over `time_per_batch`.
+    /// Default: `None`.
     pub frames_per_batch: Option<u32>,
-    /// cap for read_chunk()
-    pub max_per_read_samples: usize,
-    /// sleep when there is no active tap
+    /// Sleep duration when there is no active tap.
+    ///
+    /// Default: `Duration::from_secs(1)`.
     pub no_tap_sleep: Duration,
-    /// 0< bias <=1; actual sleep = bias * predicted_missing_time
+    /// Pacing bias in the range `0.0 < sleep_bias <= 1.0`.
+    ///
+    /// Used when a batch is partially filled to predict how long to sleep before polling
+    /// again: `actual_sleep = sleep_bias * predicted_missing_time`.
+    ///
+    /// Tuning guidance:
+    /// - Lower values (for example `0.2..0.6`) wake up earlier and poll more often.
+    ///   Prefer this for low-latency / real-time-ish processing where callback jitter
+    ///   matters more than CPU efficiency.
+    /// - Higher values (for example `0.7..1.0`) sleep closer to the full predicted
+    ///   time. Prefer this for latency-tolerant workloads where fewer wakeups and
+    ///   better CPU efficiency are more important.
+    ///
+    /// The final sleep is still clamped by `min_sleep` and `max_sleep`.
+    ///
+    /// Default: `0.75`.
     pub sleep_bias: f32,
-    /// lower clamp for tiny sleeps
+    /// Lower clamp for tiny sleeps.
+    ///
+    /// Default: `Duration::from_micros(150)`.
     pub min_sleep: Duration,
-    /// upper clamp (safety)
+    /// Upper clamp for pacing sleeps.
+    ///
+    /// Default: `Duration::from_millis(100)`.
     pub max_sleep: Duration,
 }
 
 impl Default for FrameReaderConfig {
     fn default() -> Self {
         Self {
-            ms_per_batch: Some(10),
+            time_per_batch: Some(Duration::from_millis(10)),
             frames_per_batch: None,
-            max_per_read_samples: 64 * 1024,
             no_tap_sleep: Duration::from_secs(1),
             sleep_bias: 0.75,
             min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
-            max_sleep: Duration::from_millis(5),
+            max_sleep: Duration::from_millis(100),
         }
     }
 }

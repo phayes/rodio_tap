@@ -1,6 +1,6 @@
 # rodio_tap
 
-`rodio_tap` taps `rodio::Source` audio into `f32` PCM batches while still passing the source through to playback.
+`rodio_tap` taps `rodio::Source` audio while still passing the source through to playback.
 
 Use it when you want to analyze, visualize, meter, or record playback data in real time.
 
@@ -8,11 +8,11 @@ https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff
 
 ## What it provides
 
-- `TapReader` + `TapAdapter`: low-level ring-buffer access.
-- `FrameReader`: synchronous high-level reader that yields channel-aligned batches.
+- `TapReader` + `TapAdapter`: low-level packet ring-buffer access.
+- `FrameReader`: synchronous high-level reader that yields frame batches.
 - `AsyncFrameReader` (feature `async`): async high-level reader for Tokio runtimes.
 
-All batches are interleaved (`[L, R, L, R, ...]` for stereo) and channel-aligned.
+`FrameReader` batches are arrays of interleaved frames (`[L, R, ...]` per frame).
 
 ## Installation
 
@@ -44,19 +44,19 @@ use rodio_tap::{FrameReader, TapReader};
 #     S::Item: cpal::Sample + Send + 'static,
 #     f32: cpal::FromSample<S::Item>,
 # {
-let (tap_reader, tap_adapter) = TapReader::new(rodio_source);
+let (tap_reader, tap_adapter) = TapReader::<2>::new(rodio_source);
 
 // Send `tap_adapter` into your rodio playback pipeline.
 let _ = tap_adapter;
 
 let tap_for_reader = Arc::clone(&tap_reader);
 thread::spawn(move || {
-    let mut reader = FrameReader::new(move || Some(Arc::clone(&tap_for_reader)));
+    let mut reader = FrameReader::<2>::new(move || Some(Arc::clone(&tap_for_reader)));
     reader.run(|batch, channels, sample_rate_hz| {
-        let frames = batch.len() / channels;
+        let frames = batch.len();
         println!("{} frames @ {} Hz", frames, sample_rate_hz);
 
-        for frame in batch.chunks_exact(channels) {
+        for frame in batch {
             let _ = frame;
             // Process one interleaved frame.
         }
@@ -64,6 +64,9 @@ thread::spawn(move || {
 });
 # }
 ```
+
+When stream format changes (sample rate / channel count) inside a tap, `FrameReader`
+emits any in-progress partial batch before switching to the new format.
 
 ## Async reader
 
@@ -73,11 +76,11 @@ With the `async` feature enabled:
 use std::sync::Arc;
 use rodio_tap::AsyncFrameReader;
 
-async fn run_reader(tap: Arc<rodio_tap::TapReader>) {
-    let mut reader = AsyncFrameReader::new(move || Some(Arc::clone(&tap)));
+async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
+    let mut reader = AsyncFrameReader::<2>::new(move || Some(Arc::clone(&tap)));
     reader
         .run(|batch, channels, sample_rate_hz| {
-            let frames = batch.len() / channels;
+            let frames = batch.len();
             println!("{} frames @ {} Hz", frames, sample_rate_hz);
         })
         .await;

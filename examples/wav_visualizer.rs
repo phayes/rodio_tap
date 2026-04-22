@@ -1,3 +1,4 @@
+use arc_swap::ArcSwapOption;
 use rodio::{Decoder, DeviceSinkBuilder, Player};
 use rodio_tap::{FrameReader, FrameReaderConfig, TapReader};
 use rustfft::num_complex::Complex32;
@@ -15,38 +16,89 @@ const FFT_SIZE: usize = 2048;
 const NUM_BANDS: usize = 28;
 const BAR_WIDTH: usize = 48;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TapMode {
+    /// Build one persistent tap around a rodio queue source (default).
+    SingleTap,
+    /// Build one tap per track and swap active tap as tracks start.
+    OneTapPerTrack,
+}
+
+#[derive(Debug)]
+struct CliArgs {
+    mode: TapMode,
+    wav_paths: Vec<PathBuf>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let wav_path = parse_wav_path()?;
-    let file = File::open(&wav_path)?;
-    let decoder = Decoder::new(BufReader::new(file))?;
-    let (tap_reader, tap_adapter) = TapReader::new(decoder);
+    let args = parse_cli_args()?;
 
     let mut sink_handle = DeviceSinkBuilder::open_default_sink()?;
     sink_handle.log_on_drop(false);
     let player = Player::connect_new(sink_handle.mixer());
-    player.append(tap_adapter);
+
+    // Build one of two example pipelines:
+    //
+    // 1) --single_tap (default):
+    //    - queue all tracks into one rodio queue source
+    //    - wrap queue output in one TapAdapter/TapReader pair
+    //    - append that single tap-adapter once to the player
+    //
+    // 2) --one_tap_per_track:
+    //    - create one TapAdapter/TapReader pair per track
+    //    - append each tap-adapter to the same player queue
+    //    - use ArcSwap to point FrameReader at the currently active tap
+    let tap_fn: Arc<dyn Fn() -> Option<Arc<TapReader<2>>> + Send + Sync> = match args.mode {
+        TapMode::SingleTap => {
+            let (queue_in, queue_out) = rodio::queue::queue(false);
+            let (tap_reader, tap_adapter) = TapReader::<2>::new(queue_out);
+            player.append(tap_adapter);
+
+            for wav_path in &args.wav_paths {
+                let file = File::open(wav_path)?;
+                let decoder = Decoder::new(BufReader::new(file))?;
+                queue_in.append(decoder);
+            }
+
+            let tap_reader = Arc::clone(&tap_reader);
+            Arc::new(move || Some(Arc::clone(&tap_reader)))
+        }
+        TapMode::OneTapPerTrack => {
+            let current_tap = Arc::new(ArcSwapOption::<TapReader<2>>::empty());
+            for wav_path in &args.wav_paths {
+                let file = File::open(wav_path)?;
+                let decoder = Decoder::new(BufReader::new(file))?;
+                let (_tap_reader, tap_adapter) =
+                    TapReader::<2>::new_with_publish_target(&current_tap, decoder);
+                player.append(tap_adapter);
+            }
+
+            let current_tap = Arc::clone(&current_tap);
+            Arc::new(move || current_tap.load_full())
+        }
+    };
+
     player.play();
 
     let _terminal = TerminalGuard::new()?;
     let visualizer = Arc::new(Mutex::new(Visualizer::new(FFT_SIZE, NUM_BANDS)));
     let viz_for_cb = Arc::clone(&visualizer);
-    let tap_for_reader = Arc::clone(&tap_reader);
+    let tap_fn_for_reader = Arc::clone(&tap_fn);
 
     thread::spawn(move || {
         let config = FrameReaderConfig {
-            ms_per_batch: Some(33),
+            time_per_batch: Some(Duration::from_millis(33)),
             ..Default::default()
         };
-        let mut frame_reader =
-            FrameReader::new_with_config(config, move || Some(Arc::clone(&tap_for_reader)));
+        let mut frame_reader = FrameReader::<2>::new_with_config(config, move || tap_fn_for_reader());
 
         frame_reader.run(move |batch, channels, sample_rate_hz| {
             if channels == 0 || batch.is_empty() {
                 return;
             }
 
-            let mut mono = Vec::with_capacity(batch.len() / channels);
-            for frame in batch.chunks_exact(channels) {
+            let mut mono = Vec::with_capacity(batch.len());
+            for frame in batch {
                 let sum = frame.iter().copied().sum::<f32>();
                 mono.push(sum / channels as f32);
             }
@@ -69,29 +121,55 @@ fn wait_for_playback_end(player: &Player) {
     thread::sleep(Duration::from_millis(100));
 }
 
-fn parse_wav_path() -> Result<PathBuf, Box<dyn Error>> {
+fn parse_cli_args() -> Result<CliArgs, Box<dyn Error>> {
     let mut args = std::env::args_os();
     let program = args.next().unwrap_or_default();
-    let path = match args.next() {
-        Some(path) => PathBuf::from(path),
-        None => {
-            return Err(format!(
-                "Usage: {:?} <path/to/file.wav>\nExample: cargo run --example wav_visualizer -- examples/example.wav",
-                program
-            )
-            .into())
+    let mut mode = TapMode::SingleTap;
+    let mut paths = Vec::new();
+
+    for arg in args {
+        let s = arg.to_string_lossy();
+        match s.as_ref() {
+            "--single_tap" => mode = TapMode::SingleTap,
+            "--one_tap_per_track" => mode = TapMode::OneTapPerTrack,
+            flag if flag.starts_with("--") => {
+                return Err(format!(
+                    "Unknown flag: {}\n\n{}",
+                    flag,
+                    usage_text(&program)
+                )
+                .into());
+            }
+            _ => paths.push(PathBuf::from(arg)),
         }
-    };
-
-    if args.next().is_some() {
-        return Err("Expected exactly one WAV file path argument.".into());
     }
 
-    if !path.exists() {
-        return Err(format!("Input file does not exist: {}", path.display()).into());
+    if paths.is_empty() {
+        return Err(usage_text(&program).into());
     }
 
-    Ok(path)
+    for path in &paths {
+        if !path.exists() {
+            return Err(format!("Input file does not exist: {}", path.display()).into());
+        }
+    }
+
+    Ok(CliArgs {
+        mode,
+        wav_paths: paths,
+    })
+}
+
+fn usage_text(program: &std::ffi::OsStr) -> String {
+    format!(
+        "Usage: {:?} [--single_tap|--one_tap_per_track] <path/to/file1.wav> [path/to/file2.wav ...]\n\n\
+Modes:\n\
+  --single_tap        (default) queue tracks into one tapped source\n\
+  --one_tap_per_track create one tap per queued track and swap active tap\n\n\
+Example:\n\
+  cargo run --example wav_visualizer -- --single_tap examples/example.wav examples/sweep_5s_22050_mono.wav",
+        program
+    )
 }
 
 struct TerminalGuard;
