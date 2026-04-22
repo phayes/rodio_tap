@@ -2,6 +2,12 @@
 name = "rodio_tap"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Tap rodio audio sources and analyze them in real-time."
+keywords = ["audio", "rodio", "visualization"]
+repository = "https://github.com/phayes/rodio_tap"
+documentation = "https://docs.rs/rodio_tap"
+authors = ["Patrick Hayes <patrick.d.hayes@gmail.com>"]
 
 [dependencies]
 rodio = "0.22"
