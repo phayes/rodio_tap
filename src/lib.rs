@@ -77,11 +77,5 @@ mod visualizer;
 #[cfg(feature = "visualizer")]
 pub use visualizer::*;
 
-#[cfg(all(feature = "visualizer", feature = "async"))]
-mod async_visualizer;
-
-#[cfg(all(feature = "visualizer", feature = "async"))]
-pub use async_visualizer::*;
-
 mod frame_reader;
 pub use frame_reader::*;

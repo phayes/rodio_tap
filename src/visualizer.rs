@@ -11,8 +11,8 @@
 //! analyzable maximum is still clamped by stream Nyquist (`sample_rate_hz / 2`).
 //! Bins above Nyquist are emitted as `0.0`.
 //!
-//! For async runtime integration, see `async_visualizer` (when both `visualizer` and `async`
-//! features are enabled).
+//! For async runtime integration, use [`Visualizer::run_with_frame_reader_async`] (requires the
+//! `async` feature).
 //!
 //! # Full Example
 //!
@@ -73,6 +73,8 @@
 //! ```
 
 use crate::{FrameReader, FrameReaderConfig, TapReader};
+#[cfg(feature = "async")]
+use crate::AsyncFrameReader;
 use arrayvec::ArrayVec;
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
@@ -215,7 +217,7 @@ pub struct VisualizerFrame {
 /// `C` is the maximum supported channel count and should match your `TapReader<C>` / `FrameReader<C>`.
 ///
 /// See a full runnable example:
-/// [examples/wav_visualizer_simple.rs](https://github.com/phayes/rodio_tap/blob/main/examples/wav_visualizer_simple.rs)
+/// [examples/wav_visualizer_simple.rs](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_simple.rs)
 ///
 /// # Example
 ///
@@ -340,6 +342,38 @@ impl<const C: usize> Visualizer<C> {
                 callback(&frame.channels, frame.sample_rate_hz);
             }
         });
+    }
+
+    /// Async convenience runner that wires `AsyncFrameReader` and visualizer processing together.
+    ///
+    /// Requires crate feature `async`.
+    ///
+    /// This method never returns and should be spawned on a runtime task.
+    #[cfg(feature = "async")]
+    pub async fn run_with_frame_reader_async<G, F>(
+        tap_fn: G,
+        config: VisualizerConfig,
+        mut callback: F,
+    ) -> !
+    where
+        G: Fn() -> Option<Arc<TapReader<C>>> + Send + Sync + 'static,
+        F: FnMut(&[ChannelSpectrum], u32) + Send + 'static,
+    {
+        let reader_config = FrameReaderConfig {
+            time_per_batch: Some(config.period),
+            frames_per_batch: None,
+            ..Default::default()
+        };
+        let mut reader = AsyncFrameReader::<C>::new_with_config(reader_config, tap_fn);
+        let mut visualizer = Visualizer::<C>::new(config);
+
+        reader
+            .run(move |batch, channels, sample_rate_hz| {
+                if let Some(frame) = visualizer.process_batch(batch, channels, sample_rate_hz) {
+                    callback(&frame.channels, frame.sample_rate_hz);
+                }
+            })
+            .await
     }
 
     /// Process one `FrameReader` callback batch into a visualizer frame.
@@ -521,7 +555,7 @@ impl<const C: usize> Visualizer<C> {
 /// Derive internal FFT size from callback period and sample rate.
 ///
 /// The result is rounded to a power-of-two for FFT efficiency.
-fn derive_fft_len(period: Duration, sample_rate_hz: u32) -> usize {
+pub(crate) fn derive_fft_len(period: Duration, sample_rate_hz: u32) -> usize {
     let frames =
         ((sample_rate_hz as u128 * period.as_nanos() + 500_000_000) / 1_000_000_000).max(1);
 
@@ -531,7 +565,7 @@ fn derive_fft_len(period: Duration, sample_rate_hz: u32) -> usize {
 }
 
 /// Build log-spaced band edges in Hz.
-fn compute_log_edges(min_hz: f32, max_hz: f32, num_bands: usize) -> Vec<f32> {
+pub(crate) fn compute_log_edges(min_hz: f32, max_hz: f32, num_bands: usize) -> Vec<f32> {
     let mut edges = Vec::with_capacity(num_bands + 1);
     let ratio = max_hz / min_hz;
     for idx in 0..=num_bands {
@@ -542,7 +576,7 @@ fn compute_log_edges(min_hz: f32, max_hz: f32, num_bands: usize) -> Vec<f32> {
 }
 
 /// Convert edge list into `[lo, hi]` frequency ranges.
-fn edges_to_frequency_bins(edges: &[f32]) -> Vec<FrequencyBin> {
+pub(crate) fn edges_to_frequency_bins(edges: &[f32]) -> Vec<FrequencyBin> {
     edges
         .windows(2)
         .map(|range| FrequencyBin {
@@ -553,7 +587,7 @@ fn edges_to_frequency_bins(edges: &[f32]) -> Vec<FrequencyBin> {
 }
 
 /// Map frequency (Hz) to FFT bin index.
-fn hz_to_bin(hz: f32, fft_len: usize, sample_rate_hz: u32) -> usize {
+pub(crate) fn hz_to_bin(hz: f32, fft_len: usize, sample_rate_hz: u32) -> usize {
     if sample_rate_hz == 0 {
         return 0;
     }
@@ -561,7 +595,7 @@ fn hz_to_bin(hz: f32, fft_len: usize, sample_rate_hz: u32) -> usize {
 }
 
 /// Hann window coefficient at `index` for window length `len`.
-fn hann_window(index: usize, len: usize) -> f32 {
+pub(crate) fn hann_window(index: usize, len: usize) -> f32 {
     if len <= 1 {
         1.0
     } else {
