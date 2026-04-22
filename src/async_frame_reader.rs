@@ -240,16 +240,20 @@ impl<const C: usize> AsyncFrameReader<C> {
     /// ```no_run
     /// use std::sync::Arc;
     /// use arrayvec::ArrayVec;
-    /// use arc_swap::ArcSwapOption;
     /// use rodio_tap::{AsyncFrameReader, TapReader};
     ///
-    /// // Example: your app stores the current tap in ArcSwapOption.
-    /// let current_tap = Arc::new(ArcSwapOption::<TapReader<2>>::empty());
+    /// # async fn run<S>(source: S)
+    /// # where
+    /// #     S: rodio::Source + Send + 'static,
+    /// #     S::Item: cpal::Sample + Send + 'static,
+    /// #     f32: cpal::FromSample<S::Item>,
+    /// # {
+    /// let (tap_reader, _tap_adapter) = TapReader::<2>::new(source);
     ///
-    /// // Build reader that fetches the current tap each loop.
+    /// // Build reader that always returns the same tap.
     /// let mut reader = AsyncFrameReader::<2>::new({
-    ///     let current_tap = Arc::clone(&current_tap);
-    ///     move || current_tap.load_full()
+    ///     let tap_reader = Arc::clone(&tap_reader);
+    ///     move || Some(Arc::clone(&tap_reader))
     /// });
     ///
     /// // Drive the reader and process frame batches.
@@ -272,6 +276,7 @@ impl<const C: usize> AsyncFrameReader<C> {
     ///         avgs
     ///     );
     /// }).await;
+    /// # }
     /// ```
     pub async fn run<F>(&mut self, mut on_batch: F) -> !
     where

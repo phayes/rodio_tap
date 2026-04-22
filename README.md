@@ -51,6 +51,7 @@ let _ = tap_adapter;
 
 let tap_for_reader = Arc::clone(&tap_reader);
 thread::spawn(move || {
+    // Create a stereo (2 channel) frame reader
     let mut reader = FrameReader::<2>::new(move || Some(Arc::clone(&tap_for_reader)));
     reader.run(|batch, channels, sample_rate_hz| {
         let frames = batch.len();
@@ -67,6 +68,23 @@ thread::spawn(move || {
 
 When stream format changes (sample rate / channel count) inside a tap, `FrameReader`
 emits any in-progress partial batch before switching to the new format.
+
+### Multiple tracks:
+
+```rust
+use std::sync::Arc;
+use rodio::queue;
+use rodio_tap::TapReader;
+
+// One queue source for all tracks.
+let (queue_in, queue_out) = queue::queue(false);
+
+// One persistent tap around the queue output.
+let (tap_reader, tap_adapter) = TapReader::<2>::new(queue_out);
+let _ = (tap_reader, tap_adapter);
+
+// Append each decoder to queue_in.append(decoder).
+```
 
 ## Async reader
 

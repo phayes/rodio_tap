@@ -20,7 +20,7 @@ pub struct FrameReaderConfig {
     pub frames_per_batch: Option<u32>,
     /// Sleep duration when there is no active tap.
     ///
-    /// Default: `Duration::from_secs(1)`.
+    /// Default: `Duration::from_millis(100)`.
     pub no_tap_sleep: Duration,
     /// Pacing bias in the range `0.0 < sleep_bias <= 1.0`.
     ///
@@ -54,7 +54,7 @@ impl Default for FrameReaderConfig {
         Self {
             time_per_batch: Some(Duration::from_millis(10)),
             frames_per_batch: None,
-            no_tap_sleep: Duration::from_secs(1),
+            no_tap_sleep: Duration::from_millis(100),
             sleep_bias: 0.75,
             min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
             max_sleep: Duration::from_millis(100),

@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Build one of two example pipelines:
     //
-    // 1) --single_tap (default):
+    // 1) --single_tap (default / preferred):
     //    - queue all tracks into one rodio queue source
     //    - wrap queue output in one TapAdapter/TapReader pair
     //    - append that single tap-adapter once to the player
