@@ -11,12 +11,19 @@ arrayvec = "0.7"
 cpal = "0.17"
 log = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["rt", "time"], default-features = false, optional = true }
+rustfft = { version = "6", optional = true }
 
 [dev-dependencies]
 rustfft = "6"
 
 [features]
 async = ["tokio"]
+visualizer = ["rustfft"]
 
 [[example]]
-name = "wav_visualizer"
+name = "wav_visualizer_full"
+path = "examples/wav_visualizer_full.rs"
+
+[[example]]
+name = "wav_visualizer_simple"
+required-features = ["visualizer"]

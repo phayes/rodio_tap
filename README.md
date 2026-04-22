@@ -11,8 +11,8 @@ https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff
 - `TapReader` + `TapAdapter`: low-level packet ring-buffer access.
 - `FrameReader`: synchronous high-level reader that yields frame batches.
 - `AsyncFrameReader` (feature `async`): async high-level reader for Tokio runtimes.
-
-`FrameReader` batches are arrays of interleaved frames (`[L, R, ...]` per frame).
+- `Visualizer` (feature `visualizer`): callback-driven FFT bins + peak/rms per channel.
+- `AsyncVisualizer` (feature `visualizer` + `async`): an async version of `Visualizer`.
 
 ## Installation
 
@@ -23,14 +23,21 @@ In your `Cargo.toml`:
 rodio_tap = "0.1.0"
 ```
 
-Enable async support if needed:
+Enable async support if tokio support is needed:
 
 ```toml
 [dependencies]
 rodio_tap = { version = "0.1.0", features = ["async"] }
 ```
 
-## Quick start (synchronous)
+Enable the visualizer module:
+
+```toml
+[dependencies]
+rodio_tap = { version = "0.1.0", features = ["visualizer"] }
+```
+
+## Quick start
 
 ```rust
 use std::sync::Arc;
@@ -65,9 +72,6 @@ thread::spawn(move || {
 });
 }
 ```
-
-When stream format changes (sample rate / channel count) inside a tap, `FrameReader`
-emits any in-progress partial batch before switching to the new format.
 
 ### Multiple tracks:
 
@@ -105,12 +109,79 @@ async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
 }
 ```
 
-## Example visualizer
 
-This repository includes `examples/wav_visualizer.rs`, which plays a WAV file and shows a terminal FFT view.
+## Visualizer
+
+`Visualizer` (feature `visualizer`) provides an abstract for building music visualizers. 
+
+```rust
+use rodio::source::SineWave;
+use rodio::{DeviceSinkBuilder, Player, Source};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use rodio_tap::{Visualizer, VisualizerConfig, TapReader};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build a simple test tone and loop it forever.
+    let tone = SineWave::new(440.0).amplify(0.2).repeat_infinite();
+
+    // Tap the source before sending it to playback.
+    let (tap_reader, tap_adapter) = TapReader::<2>::new(tone);
+
+    // Play audio through rodio.
+    let mut sink = DeviceSinkBuilder::open_default_sink()?;
+    sink.log_on_drop(false);
+    let player = Player::connect_new(sink.mixer());
+    player.append(tap_adapter);
+    player.play();
+
+    // Visualizer callback runs forever, so run it on a worker thread.
+    let tap_for_visualizer = Arc::clone(&tap_reader);
+    thread::spawn(move || {
+        let config = VisualizerConfig {
+            period: Duration::from_millis(33), // ~30 FPS updates
+            ..Default::default()
+        };
+        let bins = config.frequency_bins(); // stable hz ranges for each bin
+
+        Visualizer::<2>::run_with_frame_reader(
+            move || Some(Arc::clone(&tap_for_visualizer)),
+            config,
+            move |channels, sample_rate_hz| {
+                if let Some(ch0) = channels.first() {
+                    // Print only the first few bins for demo purposes.
+                    for (i, magnitude) in ch0.bins.iter().copied().take(5).enumerate() {
+                        let range = &bins[i];
+                        println!(
+                            "[{} Hz] {:>6.0}..{:>6.0} Hz => {:.4}",
+                            sample_rate_hz, range.hz_lo, range.hz_hi, magnitude
+                        );
+                    }
+                    println!("---");
+                }
+            },
+        );
+    });
+
+    // Keep main alive while audio + visualizer run.
+    thread::sleep(Duration::from_secs(1));
+    Ok(())
+}
+```
+
+## Examples
+
+This repository includes `examples/wav_visualizer_full.rs`, which plays a WAV file and shows a terminal FFT view.
 
 Run it with:
 
 ```bash
-cargo run --example wav_visualizer -- examples/example.wav
+cargo run --example wav_visualizer_full -- examples/example.wav
+```
+
+There is also a simplified, abstraction-first example using the visualizer API:
+
+```bash
+cargo run --example wav_visualizer_simple --features visualizer -- examples/example.wav
 ```

@@ -1,3 +1,6 @@
+#![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod tap;
 use std::time::Duration;
 pub use tap::*;
@@ -64,8 +67,21 @@ impl Default for FrameReaderConfig {
 
 #[cfg(feature = "async")]
 mod async_frame_reader;
+
 #[cfg(feature = "async")]
 pub use async_frame_reader::*;
 
-pub mod frame_reader;
+#[cfg(feature = "visualizer")]
+mod visualizer;
+
+#[cfg(feature = "visualizer")]
+pub use visualizer::*;
+
+#[cfg(all(feature = "visualizer", feature = "async"))]
+mod async_visualizer;
+
+#[cfg(all(feature = "visualizer", feature = "async"))]
+pub use async_visualizer::*;
+
+mod frame_reader;
 pub use frame_reader::*;
