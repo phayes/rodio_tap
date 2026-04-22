@@ -12,7 +12,6 @@ https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff
 - `FrameReader`: synchronous high-level reader that yields frame batches.
 - `AsyncFrameReader` (feature `async`): async high-level reader for Tokio runtimes.
 - `Visualizer` (feature `visualizer`): callback-driven FFT bins + peak/rms per channel.
-- `AsyncVisualizer` (feature `visualizer` + `async`): an async version of `Visualizer`.
 
 ## Installation
 
@@ -23,18 +22,18 @@ In your `Cargo.toml`:
 rodio_tap = "0.1.0"
 ```
 
-Enable async support if tokio support is needed:
-
-```toml
-[dependencies]
-rodio_tap = { version = "0.1.0", features = ["async"] }
-```
-
 Enable the visualizer module:
 
 ```toml
 [dependencies]
 rodio_tap = { version = "0.1.0", features = ["visualizer"] }
+```
+
+Enable async support if tokio support is needed:
+
+```toml
+[dependencies]
+rodio_tap = { version = "0.1.0", features = ["async"] }
 ```
 
 ## Quick start
@@ -145,6 +144,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let bins = config.frequency_bins(); // stable hz ranges for each bin
 
+        // Run visualizer with the frame reader
+        // You will get a list of channels on your callback, and each channel will have been frequency magnitures
+        // Use `run_with_frame_reader_async()` for use with tokio
         Visualizer::<2>::run_with_frame_reader(
             move || Some(Arc::clone(&tap_for_visualizer)),
             config,
