@@ -50,6 +50,8 @@ where
      S::Item: cpal::Sample + Send + 'static,
      f32: cpal::FromSample<S::Item>,
 {
+
+// Create a stereo (2-channel) tap reader from any rodio source.
 let (tap_reader, tap_adapter) = TapReader::<2>::new(rodio_source);
 
 // Send `tap_adapter` into your rodio playback pipeline.
