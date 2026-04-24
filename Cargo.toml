@@ -38,3 +38,7 @@ required-features = ["visualizer"]
 [[example]]
 name = "wav_recorder"
 path = "examples/wav_recorder.rs"
+
+[[example]]
+name = "wav_low_latency"
+path = "examples/wav_low_latency.rs"

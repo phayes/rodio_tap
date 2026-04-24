@@ -177,25 +177,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Real-Time Use
+
+`rodio_tap` is suitable for real-time monitoring and low-latency audio
+pipeline paths when configured for low latency. In release mode, typical 
+overhead is very small (often around ~100 ns).
+
+Suggested low-latency `FrameReaderConfig` starting point:
+
+- `frames_per_batch: Some(64)` (equivalent to 128 sample buffer size in stereo)
+- `time_per_batch: None` (use fixed frame batches)
+- `sleep_bias: 0.5` (wake earlier to avoid late batch delivery)
+- `min_sleep: Duration::from_micros(5)` (tiny cooperative sleep)
+- Run in `--release` mode for realistic performance numbers
+
+This profile is generally appropriate for real-time use cases such as ASIO,
+CoreAudio, WASAPI, and JACK style pipelines. 
+
 ## Examples
 
-This repository includes `examples/wav_visualizer_full.rs`, which plays a WAV file and shows a terminal FFT view.
+### `wav_visualizer_full`
 
-Run it with:
+Terminal FFT visualizer with explicit pipeline wiring and rendering logic.
 
 ```bash
 cargo run --example wav_visualizer_full -- examples/example.wav
 ```
 
-There is also a simplified, abstraction-first example using the visualizer API:
+### `wav_visualizer_simple` (feature: `visualizer`)
+
+Higher-level visualizer API example with less boilerplate.
 
 ```bash
 cargo run --example wav_visualizer_simple --features visualizer -- examples/example.wav
 ```
 
-And a recorder example that queues one or more WAV files, captures frames with
-`FrameReader`, and writes a single output WAV.
+### `wav_recorder`
+
+Queues one or more WAV files, captures frames with `FrameReader`, and writes a
+single output WAV file.
 
 ```bash
 cargo run --example wav_recorder -- examples/example.wav examples/sweep.wav
+```
+
+### `wav_low_latency`
+
+Low-latency timing monitor for callback interval and overhead measurement.
+
+```bash
+cargo run --release --example wav_low_latency -- --window=5 --loop examples/example.wav
 ```

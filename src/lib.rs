@@ -25,10 +25,12 @@ pub struct FrameReaderConfig {
     ///
     /// Default: `Duration::from_millis(100)`.
     pub no_tap_sleep: Duration,
-    /// Pacing bias in the range `0.0 < sleep_bias <= 1.0`.
+    /// Pacing bias in the range `0.0 <= sleep_bias <= 1.0`.
     ///
     /// Used when a batch is partially filled to predict how long to sleep before polling
     /// again: `actual_sleep = sleep_bias * predicted_missing_time`.
+    /// A value of `0.0` means the predicted sleep becomes zero and the reader will
+    /// always use `min_sleep` after clamping.
     ///
     /// Tuning guidance:
     /// - Lower values (for example `0.2..0.6`) wake up earlier and poll more often.
