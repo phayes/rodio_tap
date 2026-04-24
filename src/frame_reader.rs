@@ -86,18 +86,15 @@ impl<const C: usize> FrameReader<C> {
     fn recompute_batch_size(&mut self) {
         self.batch_len_frames = if let Some(frames) = self.config.frames_per_batch {
             frames as usize
+        } else if self.sr == 0 {
+            // We may attach before seeing the first Format packet.
+            1
         } else {
-            if self.sr == 0 {
-                // We may attach before seeing the first Format packet.
-                1
-            } else {
-                let batch_duration = self.config.time_per_batch.expect(
-                    "FrameReaderConfig must set time_per_batch when frames_per_batch is not set",
-                );
-                // frames = round(sr * duration_secs)
-                ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000)
-                    as usize
-            }
+            let batch_duration = self.config.time_per_batch.expect(
+                "FrameReaderConfig must set time_per_batch when frames_per_batch is not set",
+            );
+            // frames = round(sr * duration_secs)
+            ((self.sr as u128 * batch_duration.as_nanos() + 500_000_000) / 1_000_000_000) as usize
         }
         .max(1);
         self.batch_buf.clear();
@@ -112,19 +109,19 @@ impl<const C: usize> FrameReader<C> {
         };
 
         if self.active_consumer.is_none() || tap_changed {
-            if let Ok(mut slot) = tap.consumer.lock() {
-                if let Some(cons) = slot.take() {
-                    self.active_consumer = Some(cons);
-                    self.active_tap = Some(Arc::clone(&tap));
-                    self.ch = 0;
-                    self.sr = 0;
-                    self.has_format = false;
-                    self.recompute_batch_size();
+            if let Ok(mut slot) = tap.consumer.lock()
+                && let Some(cons) = slot.take()
+            {
+                self.active_consumer = Some(cons);
+                self.active_tap = Some(Arc::clone(&tap));
+                self.ch = 0;
+                self.sr = 0;
+                self.has_format = false;
+                self.recompute_batch_size();
 
-                    #[cfg(feature = "log")]
-                    log::debug!("FrameReader attached tap (awaiting first Format packet)");
-                    return true;
-                }
+                #[cfg(feature = "log")]
+                log::debug!("FrameReader attached tap (awaiting first Format packet)");
+                return true;
             }
             self.active_consumer = None;
             self.active_tap = None;
@@ -363,11 +360,12 @@ impl<const C: usize> FrameReader<C> {
             }
 
             // Pacing: if a batch is in-progress and we didn't fill it this turn, sleep a bit.
-            if !self.batch_buf.is_empty() && !made_progress {
-                if let Some(d) = self.sleep_for_missing() {
-                    std::thread::sleep(d);
-                    continue;
-                }
+            if !self.batch_buf.is_empty()
+                && !made_progress
+                && let Some(d) = self.sleep_for_missing()
+            {
+                std::thread::sleep(d);
+                continue;
             }
 
             // Otherwise, be cooperative but eager.

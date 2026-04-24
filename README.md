@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/rodio_tap.svg)](https://crates.io/crates/rodio_tap)
 [![docs.rs](https://docs.rs/rodio_tap/badge.svg)](https://docs.rs/rodio_tap)
+[![CI](https://github.com/phayes/rodio_tap/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/phayes/rodio_tap/actions/workflows/ci.yml)
 
 `rodio_tap` taps `rodio::Source` audio while still passing the source through to playback.
 
@@ -98,7 +99,7 @@ let _ = (tap_reader, tap_adapter);
 
 With the `async` feature enabled:
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use rodio_tap::AsyncFrameReader;
 
@@ -118,7 +119,7 @@ async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
 
 `Visualizer` (feature `visualizer`) provides an abstract for building music visualizers. 
 
-```rust
+```rust,ignore
 use rodio::source::SineWave;
 use rodio::{DeviceSinkBuilder, Player, Source};
 use std::sync::Arc;
@@ -228,3 +229,12 @@ Low-latency timing monitor for callback interval and overhead measurement.
 ```bash
 cargo run --release --example wav_low_latency -- --window=5 --loop examples/example.wav
 ```
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0
+- MIT license
+
+at your option.

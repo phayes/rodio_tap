@@ -126,8 +126,7 @@ impl CallbackLatencyMeter {
         } else {
             self.intervals_total_us / window_interval_count as f64
         };
-        let theoretical_min_us =
-            (frames_in_batch as f64 * 1_000_000.0) / sample_rate_hz as f64;
+        let theoretical_min_us = (frames_in_batch as f64 * 1_000_000.0) / sample_rate_hz as f64;
 
         let overhead_ns = ((avg_interval_us - theoretical_min_us).max(0.0)) * 1_000.0;
 
@@ -136,7 +135,14 @@ impl CallbackLatencyMeter {
         let _ = writeln!(
             out,
             "WAV low-latency timing report ({:.3}s windows)\n  Avg interval    : {:>9.1} us\n  Theoretical min : {:>9.1} us\n  Overhead        : {:>9.0} ns\n  Intervals       : {}\n  Batch config    : {} frames, {} ch, {} Hz",
-            self.window_seconds, avg_interval_us, theoretical_min_us, overhead_ns, window_interval_count, frames_in_batch, channels, sample_rate_hz
+            self.window_seconds,
+            avg_interval_us,
+            theoretical_min_us,
+            overhead_ns,
+            window_interval_count,
+            frames_in_batch,
+            channels,
+            sample_rate_hz
         );
         let _ = out.flush();
 
@@ -170,14 +176,13 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn Error>> {
     for arg in args {
         let arg_str = arg.to_string_lossy();
         if let Some(v) = arg_str.strip_prefix("--window=") {
-            window_seconds = v.parse::<f64>().map_err(|_| {
-                format!("Invalid --window value: {v}. Expected a positive number.")
-            })?;
+            window_seconds = v
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid --window value: {v}. Expected a positive number."))?;
             if !window_seconds.is_finite() || window_seconds <= 0.0 {
-                return Err(format!(
-                    "Invalid --window value: {v}. Expected a positive number."
-                )
-                .into());
+                return Err(
+                    format!("Invalid --window value: {v}. Expected a positive number.").into(),
+                );
             }
             continue;
         }
