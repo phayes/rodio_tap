@@ -1,5 +1,8 @@
 # rodio_tap
 
+[![crates.io](https://img.shields.io/crates/v/rodio_tap.svg)](https://crates.io/crates/rodio_tap)
+[![docs.rs](https://docs.rs/rodio_tap/badge.svg)](https://docs.rs/rodio_tap)
+
 `rodio_tap` taps `rodio::Source` audio while still passing the source through to playback.
 
 Use it when you want to analyze, visualize, meter, or record playback data in real time.
