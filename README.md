@@ -196,7 +196,7 @@ CoreAudio, WASAPI, and JACK style pipelines.
 
 ## Examples
 
-### `wav_visualizer_full`
+### [`wav_visualizer_full`](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_full.rs)
 
 Terminal FFT visualizer with explicit pipeline wiring and rendering logic.
 
@@ -204,7 +204,7 @@ Terminal FFT visualizer with explicit pipeline wiring and rendering logic.
 cargo run --example wav_visualizer_full -- examples/example.wav
 ```
 
-### `wav_visualizer_simple` (feature: `visualizer`)
+### [`wav_visualizer_simple`](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_simple.rs) (feature: `visualizer`)
 
 Higher-level visualizer API example with less boilerplate.
 
@@ -212,7 +212,7 @@ Higher-level visualizer API example with less boilerplate.
 cargo run --example wav_visualizer_simple --features visualizer -- examples/example.wav
 ```
 
-### `wav_recorder`
+### [`wav_recorder`](https://github.com/phayes/rodio_tap/blob/master/examples/wav_recorder.rs)
 
 Queues one or more WAV files, captures frames with `FrameReader`, and writes a
 single output WAV file.
@@ -221,7 +221,7 @@ single output WAV file.
 cargo run --example wav_recorder -- examples/example.wav examples/sweep.wav
 ```
 
-### `wav_low_latency`
+### [`wav_low_latency`](https://github.com/phayes/rodio_tap/blob/master/examples/wav_low_latency.rs)
 
 Low-latency timing monitor for callback interval and overhead measurement.
 

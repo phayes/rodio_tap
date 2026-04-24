@@ -11,6 +11,12 @@ pub use tap::*;
 /// `AsyncFrameReader` is available behind the `async` feature for Tokio/async runtimes.
 ///
 /// You must specify at least one of `time_per_batch` or `frames_per_batch`
+///
+/// Real-time tuning (suggested starting point for very low-latency use cases):
+/// - `frames_per_batch: Some(64)` (equivalent to 128 sample buffer size in stereo)
+/// - `time_per_batch: None` (use fixed frame batches)
+/// - `sleep_bias: 0.5` (wake earlier to avoid late batch delivery)
+/// - `min_sleep: Duration::from_micros(5)` (tiny cooperative sleep)
 pub struct FrameReaderConfig {
     /// Target batch duration.
     ///
