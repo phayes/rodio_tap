@@ -24,21 +24,21 @@ In your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rodio_tap = "0.1.1"
+rodio_tap = "0.2.0"
 ```
 
 Enable the visualizer module:
 
 ```toml
 [dependencies]
-rodio_tap = { version = "0.1.1", features = ["visualizer"] }
+rodio_tap = { version = "0.2.0", features = ["visualizer"] }
 ```
 
 Enable async support if tokio support is needed:
 
 ```toml
 [dependencies]
-rodio_tap = { version = "0.1.1", features = ["async"] }
+rodio_tap = { version = "0.2.0", features = ["async"] }
 ```
 
 ## Quick start
