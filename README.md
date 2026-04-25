@@ -8,7 +8,8 @@
 
 Use it when you want to analyze, visualize, meter, or record playback data in real time.
 
-https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff
+<!-- Small Demo Video - will be ignored on crates.io and docs.rs -->
+<video src="https://github.com/user-attachments/assets/54d66615-4ef3-4876-af7b-6dc5886b64ff" controls></video>
 
 ## What it provides
 
@@ -125,7 +126,7 @@ use rodio::{DeviceSinkBuilder, Player, Source};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use rodio_tap::{Visualizer, VisualizerConfig, TapReader};
+use rodio_tap::{Visualizer, VisualizerConfig, TapReader, Transform};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build a simple test tone and loop it forever.
@@ -146,6 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || {
         let config = VisualizerConfig {
             period: Duration::from_millis(33), // ~30 FPS updates
+            transform: Transform::FourierLog(28), // default transform
             ..Default::default()
         };
         let bins = config.frequency_bins(); // stable hz ranges for each bin

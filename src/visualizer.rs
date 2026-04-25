@@ -5,7 +5,7 @@
 //! 1. Pull tapped frame batches from a `TapReader` via `FrameReader`.
 //! 2. Maintain per-channel rolling sample history.
 //! 3. Run FFT analysis at a cadence derived from [`VisualizerConfig::period`].
-//! 4. Emit per-channel peak/RMS plus fixed log-spaced bin magnitudes.
+//! 4. Emit per-channel peak/RMS plus configured frequency-bin magnitudes.
 //!
 //! The bin layout (`hz_lo` / `hz_hi`) is fixed by config, while each callback's effective
 //! analyzable maximum is still clamped by stream Nyquist (`sample_rate_hz / 2`).
@@ -100,6 +100,232 @@ pub const TOP_FREQUENCY_CD: f32 = 22_050.0;
 pub const TOP_FREQUENCY_48K: f32 = 24_000.0;
 
 #[derive(Debug, Clone)]
+/// Frequency-domain bin transform configuration.
+pub enum Transform {
+    /// Log-spaced usize number of bins between a minimum and maximum frequency.
+    FourierLog(usize),
+    /// Linearly-spaced usize number of bins between a minimum and maximum frequency.
+    FourierLinear(usize),
+    /// User-provided bin ranges used as-is.
+    FourierCustom(Vec<FrequencyBin>),
+}
+
+/// Error returned by visualizer configuration validation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VisualizerError {
+    PeriodMustBePositive,
+    BinCountMustBePositive,
+    MinFrequencyMustBePositive {
+        min_frequency_hz: f32,
+    },
+    MaxFrequencyMustExceedMin {
+        min_frequency_hz: f32,
+        max_frequency_hz: f32,
+    },
+    CustomBinsEmpty,
+    CustomBinLowerEdgeMustBePositive {
+        index: usize,
+        hz_lo: f32,
+    },
+    CustomBinUpperEdgeMustExceedLower {
+        index: usize,
+        hz_lo: f32,
+        hz_hi: f32,
+    },
+    CustomBinsMustBeSortedAndNonOverlapping {
+        previous_index: usize,
+        current_index: usize,
+        previous_hz_hi: f32,
+        current_hz_lo: f32,
+    },
+}
+
+impl std::fmt::Display for VisualizerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VisualizerError::PeriodMustBePositive => {
+                write!(f, "VisualizerConfig.period must be > 0")
+            }
+            VisualizerError::BinCountMustBePositive => {
+                write!(f, "transform bin count must be > 0")
+            }
+            VisualizerError::MinFrequencyMustBePositive { min_frequency_hz } => {
+                write!(f, "min_frequency_hz must be > 0 (got {min_frequency_hz})")
+            }
+            VisualizerError::MaxFrequencyMustExceedMin {
+                min_frequency_hz,
+                max_frequency_hz,
+            } => write!(
+                f,
+                "max_frequency_hz must be > min_frequency_hz (got min={min_frequency_hz}, max={max_frequency_hz})"
+            ),
+            VisualizerError::CustomBinsEmpty => {
+                write!(f, "Transform::FourierCustom bins must not be empty")
+            }
+            VisualizerError::CustomBinLowerEdgeMustBePositive { index, hz_lo } => write!(
+                f,
+                "custom bin at index {index} must have hz_lo > 0 (got {hz_lo})"
+            ),
+            VisualizerError::CustomBinUpperEdgeMustExceedLower {
+                index,
+                hz_lo,
+                hz_hi,
+            } => write!(
+                f,
+                "custom bin at index {index} must have hz_hi > hz_lo (got hz_lo={hz_lo}, hz_hi={hz_hi})"
+            ),
+            VisualizerError::CustomBinsMustBeSortedAndNonOverlapping {
+                previous_index,
+                current_index,
+                previous_hz_hi,
+                current_hz_lo,
+            } => write!(
+                f,
+                "custom bins must be sorted and non-overlapping (bin {current_index}.hz_lo={current_hz_lo} < bin {previous_index}.hz_hi={previous_hz_hi})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VisualizerError {}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::FourierLog(28)
+    }
+}
+
+impl Transform {
+    /// Validate this transform against the provided generated-bin frequency range.
+    ///
+    /// For `FourierLog` and `FourierLinear`, checks:
+    /// - bin count is greater than zero
+    /// - `min_frequency_hz > 0.0`
+    /// - `max_frequency_hz > min_frequency_hz`
+    ///
+    /// For `FourierCustom`, checks:
+    /// - at least one bin is provided
+    /// - each bin has `hz_lo > 0.0` and `hz_hi > hz_lo`
+    /// - bins are sorted and non-overlapping (`next.hz_lo >= prev.hz_hi`)
+    pub fn validate(
+        &self,
+        min_frequency_hz: f32,
+        max_frequency_hz: f32,
+    ) -> Result<(), VisualizerError> {
+        match self {
+            Transform::FourierLog(num_bins) | Transform::FourierLinear(num_bins) => {
+                if *num_bins == 0 {
+                    return Err(VisualizerError::BinCountMustBePositive);
+                }
+                if min_frequency_hz <= 0.0 {
+                    return Err(VisualizerError::MinFrequencyMustBePositive { min_frequency_hz });
+                }
+                if max_frequency_hz <= min_frequency_hz {
+                    return Err(VisualizerError::MaxFrequencyMustExceedMin {
+                        min_frequency_hz,
+                        max_frequency_hz,
+                    });
+                }
+            }
+            Transform::FourierCustom(bins) => {
+                if bins.is_empty() {
+                    return Err(VisualizerError::CustomBinsEmpty);
+                }
+                for (idx, bin) in bins.iter().enumerate() {
+                    if bin.hz_lo <= 0.0 {
+                        return Err(VisualizerError::CustomBinLowerEdgeMustBePositive {
+                            index: idx,
+                            hz_lo: bin.hz_lo,
+                        });
+                    }
+                    if bin.hz_hi <= bin.hz_lo {
+                        return Err(VisualizerError::CustomBinUpperEdgeMustExceedLower {
+                            index: idx,
+                            hz_lo: bin.hz_lo,
+                            hz_hi: bin.hz_hi,
+                        });
+                    }
+                    if let Some(prev) = idx.checked_sub(1).and_then(|i| bins.get(i)) {
+                        if bin.hz_lo < prev.hz_hi {
+                            return Err(VisualizerError::CustomBinsMustBeSortedAndNonOverlapping {
+                                previous_index: idx - 1,
+                                current_index: idx,
+                                previous_hz_hi: prev.hz_hi,
+                                current_hz_lo: bin.hz_lo,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compute frequency-bands for this transform.
+    pub fn frequency_bins(
+        &self,
+        min_frequency_hz: f32,
+        max_frequency_hz: f32,
+    ) -> Vec<FrequencyBin> {
+        match self {
+            Transform::FourierLog(_) => {
+                let edges = self.compute_log_edges(min_frequency_hz, max_frequency_hz);
+                edges_to_frequency_bins(&edges)
+            }
+            Transform::FourierLinear(_) => {
+                let edges = self.compute_linear_edges(min_frequency_hz, max_frequency_hz);
+                edges_to_frequency_bins(&edges)
+            }
+            Transform::FourierCustom(bins) => bins.clone(),
+        }
+    }
+
+    fn configured_max_frequency_hz(&self, max_frequency_hz: f32) -> f32 {
+        match self {
+            Transform::FourierLog(_) | Transform::FourierLinear(_) => max_frequency_hz,
+            Transform::FourierCustom(bins) => bins.iter().map(|bin| bin.hz_hi).fold(0.0, f32::max),
+        }
+    }
+
+    /// Build geometrically spaced band edges in Hz.
+    ///
+    /// Uses a constant-ratio progression (`min_hz * (max_hz / min_hz).powf(t)`), so it is
+    /// logarithmic in the broad sense but not tied to any specific log base.
+    fn compute_log_edges(&self, min_hz: f32, max_hz: f32) -> Vec<f32> {
+        let num_bands = match self {
+            Transform::FourierLog(n) | Transform::FourierLinear(n) => *n,
+            Transform::FourierCustom(_) => {
+                panic!("Transform::FourierCustom does not generate computed log edges")
+            }
+        };
+        let mut edges = Vec::with_capacity(num_bands + 1);
+        let ratio = max_hz / min_hz;
+        for idx in 0..=num_bands {
+            let t = idx as f32 / num_bands as f32;
+            edges.push(min_hz * ratio.powf(t));
+        }
+        edges
+    }
+
+    /// Build linearly-spaced band edges in Hz.
+    fn compute_linear_edges(&self, min_hz: f32, max_hz: f32) -> Vec<f32> {
+        let num_bands = match self {
+            Transform::FourierLog(n) | Transform::FourierLinear(n) => *n,
+            Transform::FourierCustom(_) => {
+                panic!("Transform::FourierCustom does not generate computed linear edges")
+            }
+        };
+        let mut edges = Vec::with_capacity(num_bands + 1);
+        let span = max_hz - min_hz;
+        for idx in 0..=num_bands {
+            let t = idx as f32 / num_bands as f32;
+            edges.push(min_hz + span * t);
+        }
+        edges
+    }
+}
+
+#[derive(Debug, Clone)]
 /// Configuration for spectrum analysis and callback cadence.
 pub struct VisualizerConfig {
     /// Target callback cadence.
@@ -108,17 +334,15 @@ pub struct VisualizerConfig {
     ///
     /// Default: `Duration::from_millis(33)`.
     pub period: Duration,
-    /// Number of output bands per channel.
+    /// Frequency transform used to build output bins.
     ///
-    /// Bands are log-spaced between `min_frequency_hz` and `max_frequency_hz`.
-    ///
-    /// Default: `28`.
-    pub num_bands: usize,
-    /// Lower bound (Hz) for fixed band construction.
+    /// Default: `Transform::FourierLog(28)`.
+    pub transform: Transform,
+    /// Lower bound (Hz) for generated bin construction (`FourierLog` / `FourierLinear`).
     ///
     /// Default: `LOW_FREQUENCY_HUMAN` (`20.0`).
     pub min_frequency_hz: f32,
-    /// Upper bound (Hz) for fixed band construction.
+    /// Upper bound (Hz) for generated bin construction (`FourierLog` / `FourierLinear`).
     ///
     /// Per-callback effective max is `min(max_frequency_hz, sample_rate_hz / 2)`.
     ///
@@ -141,7 +365,7 @@ impl Default for VisualizerConfig {
     fn default() -> Self {
         Self {
             period: Duration::from_millis(33),
-            num_bands: 28,
+            transform: Transform::default(),
             min_frequency_hz: LOW_FREQUENCY_HUMAN,
             max_frequency_hz: TOP_FREQUENCY_HUMAN,
             normalize_by_fft_size: false,
@@ -151,29 +375,26 @@ impl Default for VisualizerConfig {
 }
 
 impl VisualizerConfig {
-    fn validate(&self) {
-        assert!(
-            self.period.as_nanos() > 0,
-            "VisualizerConfig.period must be > 0"
-        );
-        assert!(self.num_bands > 0, "VisualizerConfig.num_bands must be > 0");
-        assert!(
-            self.min_frequency_hz > 0.0,
-            "VisualizerConfig.min_frequency_hz must be > 0"
-        );
-        assert!(
-            self.max_frequency_hz > self.min_frequency_hz,
-            "VisualizerConfig.max_frequency_hz must be > min_frequency_hz"
-        );
+    pub fn validate(&self) -> Result<(), VisualizerError> {
+        if self.period.as_nanos() == 0 {
+            return Err(VisualizerError::PeriodMustBePositive);
+        }
+        self.transform
+            .validate(self.min_frequency_hz, self.max_frequency_hz)
     }
 
     /// Compute fixed frequency-band metadata for this config.
     ///
-    /// Returned bands are log-spaced and stable for the lifetime of the config.
     /// Magnitudes are not included here; they are emitted in `ChannelSpectrum.bins`.
     pub fn frequency_bins(&self) -> Vec<FrequencyBin> {
-        let edges = compute_log_edges(self.min_frequency_hz, self.max_frequency_hz, self.num_bands);
-        edges_to_frequency_bins(&edges)
+        self.transform
+            .frequency_bins(self.min_frequency_hz, self.max_frequency_hz)
+    }
+
+    /// Maximum configured frequency target for this transform.
+    fn configured_max_frequency_hz(&self) -> f32 {
+        self.transform
+            .configured_max_frequency_hz(self.max_frequency_hz)
     }
 }
 
@@ -184,6 +405,19 @@ pub struct FrequencyBin {
     pub hz_lo: f32,
     /// Upper edge of the band in Hz.
     pub hz_hi: f32,
+}
+
+impl FrequencyBin {
+    /// Create a frequency bin from lower/upper edges in Hz.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `hz_lo <= 0.0` or `hz_hi <= hz_lo`.
+    pub fn new(hz_lo: f32, hz_hi: f32) -> Self {
+        assert!(hz_lo > 0.0, "FrequencyBin.hz_lo must be > 0");
+        assert!(hz_hi > hz_lo, "FrequencyBin.hz_hi must be > hz_lo");
+        Self { hz_lo, hz_hi }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -279,18 +513,20 @@ pub struct Visualizer<const C: usize = 2> {
 impl<const C: usize> Visualizer<C> {
     /// Create a new visualizer with the given config.
     ///
+    /// Returns an error if the config is invalid.
+    ///
     /// # Panics
     ///
-    /// Panics if `C == 0` or the config is invalid.
-    pub fn new(config: VisualizerConfig) -> Self {
+    /// Panics if `C == 0`.
+    pub fn new(config: VisualizerConfig) -> Result<Self, VisualizerError> {
         assert!(C > 0, "Visualizer requires C > 0");
-        config.validate();
+        config.validate()?;
 
         let fft_len = 1usize;
         let mut fft_planner = FftPlanner::new();
         let fft = fft_planner.plan_fft_forward(fft_len);
 
-        Self {
+        Ok(Self {
             frequency_bins: config.frequency_bins(),
             histories: (0..C).map(|_| VecDeque::new()).collect(),
             fft_planner,
@@ -300,7 +536,7 @@ impl<const C: usize> Visualizer<C> {
             fft_len,
             last_sample_rate_hz: None,
             config,
-        }
+        })
     }
 
     /// Access the effective config.
@@ -315,7 +551,7 @@ impl<const C: usize> Visualizer<C> {
         &self.frequency_bins
     }
 
-    /// Convenience runner that wires `FrameReader` and visualizer processing together.
+    /// Runner that wires `FrameReader` and visualizer processing together.
     ///
     /// This method never returns and should generally be run on a dedicated thread.
     ///
@@ -331,7 +567,8 @@ impl<const C: usize> Visualizer<C> {
             ..Default::default()
         };
         let mut reader = FrameReader::<C>::new_with_config(reader_config, tap_fn);
-        let mut visualizer = Visualizer::<C>::new(config);
+        let mut visualizer = Visualizer::<C>::new(config)
+            .unwrap_or_else(|err| panic!("Visualizer config is invalid: {err}"));
 
         reader.run(move |batch, channels, sample_rate_hz| {
             if let Some(frame) = visualizer.process_batch(batch, channels, sample_rate_hz) {
@@ -340,7 +577,7 @@ impl<const C: usize> Visualizer<C> {
         });
     }
 
-    /// Async convenience runner that wires `AsyncFrameReader` and visualizer processing together.
+    /// Async runner that wires `AsyncFrameReader` and visualizer processing together.
     ///
     /// Requires crate feature `async`.
     ///
@@ -361,7 +598,8 @@ impl<const C: usize> Visualizer<C> {
             ..Default::default()
         };
         let mut reader = AsyncFrameReader::<C>::new_with_config(reader_config, tap_fn);
-        let mut visualizer = Visualizer::<C>::new(config);
+        let mut visualizer = Visualizer::<C>::new(config)
+            .unwrap_or_else(|err| panic!("Visualizer config is invalid: {err}"));
 
         reader
             .run(move |batch, channels, sample_rate_hz| {
@@ -496,7 +734,7 @@ impl<const C: usize> Visualizer<C> {
         // Keep the effective upper analysis limit tied to stream Nyquist.
         let effective_max_hz = self
             .config
-            .max_frequency_hz
+            .configured_max_frequency_hz()
             .min(sample_rate_hz as f32 * 0.5);
         if effective_max_hz <= 0.0 {
             magnitudes.fill(0.0);
@@ -511,7 +749,7 @@ impl<const C: usize> Visualizer<C> {
     fn compute_bin_magnitudes(&self, sample_rate_hz: u32, magnitudes: &[f32]) -> Vec<f32> {
         let mut bins = Vec::with_capacity(self.frequency_bins.len());
         let nyquist = sample_rate_hz as f32 * 0.5;
-        let effective_max = self.config.max_frequency_hz.min(nyquist);
+        let effective_max = self.config.configured_max_frequency_hz().min(nyquist);
         let max_bin = magnitudes.len().saturating_sub(1);
 
         for band in &self.frequency_bins {
@@ -560,25 +798,11 @@ pub(crate) fn derive_fft_len(period: Duration, sample_rate_hz: u32) -> usize {
     target.next_power_of_two().max(1)
 }
 
-/// Build log-spaced band edges in Hz.
-pub(crate) fn compute_log_edges(min_hz: f32, max_hz: f32, num_bands: usize) -> Vec<f32> {
-    let mut edges = Vec::with_capacity(num_bands + 1);
-    let ratio = max_hz / min_hz;
-    for idx in 0..=num_bands {
-        let t = idx as f32 / num_bands as f32;
-        edges.push(min_hz * ratio.powf(t));
-    }
-    edges
-}
-
 /// Convert edge list into `[lo, hi]` frequency ranges.
 pub(crate) fn edges_to_frequency_bins(edges: &[f32]) -> Vec<FrequencyBin> {
     edges
         .windows(2)
-        .map(|range| FrequencyBin {
-            hz_lo: range[0],
-            hz_hi: range[1],
-        })
+        .map(|range| FrequencyBin::new(range[0], range[1]))
         .collect()
 }
 
