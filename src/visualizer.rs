@@ -132,12 +132,6 @@ pub enum VisualizerError {
         hz_lo: f32,
         hz_hi: f32,
     },
-    CustomBinsMustBeSortedAndNonOverlapping {
-        previous_index: usize,
-        current_index: usize,
-        previous_hz_hi: f32,
-        current_hz_lo: f32,
-    },
 }
 
 impl std::fmt::Display for VisualizerError {
@@ -174,15 +168,6 @@ impl std::fmt::Display for VisualizerError {
                 f,
                 "custom bin at index {index} must have hz_hi > hz_lo (got hz_lo={hz_lo}, hz_hi={hz_hi})"
             ),
-            VisualizerError::CustomBinsMustBeSortedAndNonOverlapping {
-                previous_index,
-                current_index,
-                previous_hz_hi,
-                current_hz_lo,
-            } => write!(
-                f,
-                "custom bins must be sorted and non-overlapping (bin {current_index}.hz_lo={current_hz_lo} < bin {previous_index}.hz_hi={previous_hz_hi})"
-            ),
         }
     }
 }
@@ -206,7 +191,8 @@ impl Transform {
     /// For `FourierCustom`, checks:
     /// - at least one bin is provided
     /// - each bin has `hz_lo > 0.0` and `hz_hi > hz_lo`
-    /// - bins are sorted and non-overlapping (`next.hz_lo >= prev.hz_hi`)
+    ///
+    /// Note: custom bins may overlap.
     pub fn validate(
         &self,
         min_frequency_hz: f32,
@@ -244,16 +230,6 @@ impl Transform {
                             hz_lo: bin.hz_lo,
                             hz_hi: bin.hz_hi,
                         });
-                    }
-                    if let Some(prev) = idx.checked_sub(1).and_then(|i| bins.get(i)) {
-                        if bin.hz_lo < prev.hz_hi {
-                            return Err(VisualizerError::CustomBinsMustBeSortedAndNonOverlapping {
-                                previous_index: idx - 1,
-                                current_index: idx,
-                                previous_hz_hi: prev.hz_hi,
-                                current_hz_lo: bin.hz_lo,
-                            });
-                        }
                     }
                 }
             }
@@ -822,5 +798,113 @@ pub(crate) fn hann_window(index: usize, len: usize) -> f32 {
         let n = index as f32;
         let denom = (len - 1) as f32;
         0.5 - 0.5 * (2.0 * std::f32::consts::PI * n / denom).cos()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn transform_validate_rejects_zero_bins() {
+        let err = Transform::FourierLog(0)
+            .validate(LOW_FREQUENCY_HUMAN, TOP_FREQUENCY_HUMAN)
+            .unwrap_err();
+        assert_eq!(err, VisualizerError::BinCountMustBePositive);
+    }
+
+    #[test]
+    fn transform_validate_custom_allows_overlapping_bins() {
+        let transform = Transform::FourierCustom(vec![
+            FrequencyBin::new(20.0, 100.0),
+            FrequencyBin::new(90.0, 200.0),
+        ]);
+
+        assert!(
+            transform
+                .validate(LOW_FREQUENCY_HUMAN, TOP_FREQUENCY_HUMAN)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn transform_validate_custom_accepts_valid_bins() {
+        let transform = Transform::FourierCustom(vec![
+            FrequencyBin::new(20.0, 100.0),
+            FrequencyBin::new(100.0, 300.0),
+            FrequencyBin::new(300.0, 1_000.0),
+        ]);
+
+        assert!(
+            transform
+                .validate(LOW_FREQUENCY_HUMAN, TOP_FREQUENCY_HUMAN)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn transform_frequency_bins_linear_have_even_spacing() {
+        let bins = Transform::FourierLinear(4).frequency_bins(20.0, 220.0);
+        assert_eq!(bins.len(), 4);
+
+        let widths: Vec<f32> = bins.iter().map(|bin| bin.hz_hi - bin.hz_lo).collect();
+        assert!(approx_eq(widths[0], widths[1], 1e-5));
+        assert!(approx_eq(widths[1], widths[2], 1e-5));
+        assert!(approx_eq(widths[2], widths[3], 1e-5));
+        assert!(approx_eq(bins[0].hz_lo, 20.0, 1e-5));
+        assert!(approx_eq(bins[3].hz_hi, 220.0, 1e-5));
+    }
+
+    #[test]
+    fn transform_frequency_bins_log_have_constant_ratio_edges() {
+        let bins = Transform::FourierLog(4).frequency_bins(10.0, 160.0);
+        assert_eq!(bins.len(), 4);
+
+        let edges = [
+            bins[0].hz_lo,
+            bins[0].hz_hi,
+            bins[1].hz_hi,
+            bins[2].hz_hi,
+            bins[3].hz_hi,
+        ];
+        let r0 = edges[1] / edges[0];
+        let r1 = edges[2] / edges[1];
+        let r2 = edges[3] / edges[2];
+        let r3 = edges[4] / edges[3];
+
+        assert!(approx_eq(r0, r1, 1e-5));
+        assert!(approx_eq(r1, r2, 1e-5));
+        assert!(approx_eq(r2, r3, 1e-5));
+        assert!(approx_eq(edges[0], 10.0, 1e-5));
+        assert!(approx_eq(edges[4], 160.0, 1e-4));
+    }
+
+    #[test]
+    fn visualizer_config_validate_checks_period() {
+        let config = VisualizerConfig {
+            period: Duration::from_nanos(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(VisualizerError::PeriodMustBePositive)
+        );
+    }
+
+    #[test]
+    fn visualizer_new_returns_error_for_invalid_transform() {
+        let config = VisualizerConfig {
+            transform: Transform::FourierLog(0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            Visualizer::<2>::new(config),
+            Err(VisualizerError::BinCountMustBePositive)
+        ));
     }
 }
