@@ -17,15 +17,19 @@ arrayvec = "0.7"
 cpal = "0.17"
 log = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["rt", "time"], default-features = false, optional = true }
-rustfft = { version = "6", optional = true }
+realfft = { version = "3", optional = true }
 
 [dev-dependencies]
-rustfft = "6"
 hound = "3"
+realfft = "3"
 
 [features]
 async = ["tokio"]
-visualizer = ["rustfft"]
+visualizer = ["dep:realfft"]
+avx = ["dep:realfft", "realfft/avx"]
+sse = ["dep:realfft", "realfft/sse"]
+neon = ["dep:realfft", "realfft/neon"]
+wasm_simd = ["dep:realfft", "realfft/wasm_simd"]
 
 [[example]]
 name = "wav_visualizer_full"

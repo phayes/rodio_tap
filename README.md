@@ -100,7 +100,7 @@ let _ = (tap_reader, tap_adapter);
 
 With the `async` feature enabled:
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use rodio_tap::AsyncFrameReader;
 
@@ -120,7 +120,15 @@ async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
 
 `Visualizer` (feature `visualizer`) provides an abstract for building music visualizers. 
 
-```rust,ignore
+Internally, `Visualizer` uses `realfft` for real-to-complex FFT processing.
+
+This crate exposes SIMD feature flags that forward directly to `realfft`:
+- `avx`
+- `sse`
+- `neon`
+- `wasm_simd`
+
+```rust
 use rodio::source::SineWave;
 use rodio::{DeviceSinkBuilder, Player, Source};
 use std::sync::Arc;

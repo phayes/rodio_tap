@@ -76,8 +76,8 @@
 use crate::AsyncFrameReader;
 use crate::{FrameReader, FrameReaderConfig, TapReader};
 use arrayvec::ArrayVec;
-use rustfft::num_complex::Complex32;
-use rustfft::{Fft, FftPlanner};
+use realfft::num_complex::Complex32;
+use realfft::{RealFftPlanner, RealToComplex};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -422,6 +422,18 @@ pub struct VisualizerFrame {
 ///
 /// `C` is the maximum supported channel count and should match your `TapReader<C>` / `FrameReader<C>`.
 ///
+/// This type is available with the crate feature `visualizer`.
+///
+/// FFT processing uses `realfft` internally (real-to-complex transform), and this crate forwards
+/// SIMD-related feature flags to `realfft`:
+/// - `avx`
+/// - `sse`
+/// - `neon`
+/// - `wasm_simd`
+///
+/// Example dependency setup:
+/// `rodio_tap = { version = "0.2.0", features = ["visualizer", "avx"] }`
+///
 /// See a full runnable example:
 /// [examples/wav_visualizer_simple.rs](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_simple.rs)
 ///
@@ -478,9 +490,9 @@ pub struct Visualizer<const C: usize = 2> {
     config: VisualizerConfig,
     frequency_bins: Vec<FrequencyBin>,
     histories: Vec<VecDeque<f32>>,
-    fft_planner: FftPlanner<f32>,
-    fft: Arc<dyn Fft<f32>>,
-    fft_input: Vec<Complex32>,
+    fft_planner: RealFftPlanner<f32>,
+    fft: Arc<dyn RealToComplex<f32>>,
+    fft_input: Vec<f32>,
     fft_spectrum: Vec<Complex32>,
     fft_len: usize,
     last_sample_rate_hz: Option<u32>,
@@ -499,16 +511,18 @@ impl<const C: usize> Visualizer<C> {
         config.validate()?;
 
         let fft_len = 1usize;
-        let mut fft_planner = FftPlanner::new();
+        let mut fft_planner = RealFftPlanner::<f32>::new();
         let fft = fft_planner.plan_fft_forward(fft_len);
+        let fft_input = fft.make_input_vec();
+        let fft_spectrum = fft.make_output_vec();
 
         Ok(Self {
             frequency_bins: config.frequency_bins(),
             histories: (0..C).map(|_| VecDeque::new()).collect(),
             fft_planner,
             fft,
-            fft_input: vec![Complex32::new(0.0, 0.0); fft_len],
-            fft_spectrum: vec![Complex32::new(0.0, 0.0); fft_len],
+            fft_input,
+            fft_spectrum,
             fft_len,
             last_sample_rate_hz: None,
             config,
@@ -672,8 +686,8 @@ impl<const C: usize> Visualizer<C> {
     fn reconfigure_fft(&mut self, fft_len: usize) {
         self.fft_len = fft_len.max(1);
         self.fft = self.fft_planner.plan_fft_forward(self.fft_len);
-        self.fft_input = vec![Complex32::new(0.0, 0.0); self.fft_len];
-        self.fft_spectrum = vec![Complex32::new(0.0, 0.0); self.fft_len];
+        self.fft_input = self.fft.make_input_vec();
+        self.fft_spectrum = self.fft.make_output_vec();
         for history in &mut self.histories {
             while history.len() > self.fft_len {
                 history.pop_front();
@@ -684,19 +698,20 @@ impl<const C: usize> Visualizer<C> {
     /// Compute linear magnitudes for FFT bins `0..=N/2` for one channel.
     fn compute_fft_magnitudes(&mut self, channel: usize, sample_rate_hz: u32) -> Vec<f32> {
         let history = &self.histories[channel];
-        self.fft_input.fill(Complex32::new(0.0, 0.0));
+        self.fft_input.fill(0.0);
 
         let start = self.fft_len.saturating_sub(history.len());
         for (i, sample) in history.iter().enumerate() {
             let idx = start + i;
             let windowed = *sample * hann_window(idx, self.fft_len);
-            self.fft_input[idx] = Complex32::new(windowed, 0.0);
+            self.fft_input[idx] = windowed;
         }
 
-        self.fft_spectrum.copy_from_slice(&self.fft_input);
-        self.fft.process(&mut self.fft_spectrum);
+        self.fft
+            .process(&mut self.fft_input, &mut self.fft_spectrum)
+            .expect("realfft input/output lengths must match planned FFT length");
 
-        let max_bin = (self.fft_len / 2).max(1);
+        let max_bin = self.fft_spectrum.len().saturating_sub(1);
         let mut magnitudes = vec![0.0_f32; max_bin + 1];
         for (idx, slot) in magnitudes.iter_mut().enumerate() {
             let c = self.fft_spectrum[idx];

@@ -1,8 +1,8 @@
 use arc_swap::ArcSwapOption;
+use realfft::num_complex::Complex32;
+use realfft::{RealFftPlanner, RealToComplex};
 use rodio::{Decoder, DeviceSinkBuilder, Player};
 use rodio_tap::{FrameReader, FrameReaderConfig, TapReader};
-use rustfft::num_complex::Complex32;
-use rustfft::{Fft, FftPlanner};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fs::File;
@@ -223,24 +223,26 @@ struct SpectrumAnalyzer {
     n_fft: usize,
     num_bands: usize,
     history: VecDeque<f32>,
-    fft_planner: FftPlanner<f32>,
-    fft: Arc<dyn Fft<f32>>,
-    fft_input: Vec<Complex32>,
+    fft_planner: RealFftPlanner<f32>,
+    fft: Arc<dyn RealToComplex<f32>>,
+    fft_input: Vec<f32>,
     fft_spectrum: Vec<Complex32>,
 }
 
 impl SpectrumAnalyzer {
     fn new(n_fft: usize, num_bands: usize) -> Self {
-        let mut fft_planner = FftPlanner::new();
+        let mut fft_planner = RealFftPlanner::<f32>::new();
         let fft = fft_planner.plan_fft_forward(n_fft);
+        let fft_input = fft.make_input_vec();
+        let fft_spectrum = fft.make_output_vec();
         Self {
             n_fft,
             num_bands,
             history: VecDeque::with_capacity(n_fft),
             fft_planner,
             fft,
-            fft_input: vec![Complex32::new(0.0, 0.0); n_fft],
-            fft_spectrum: vec![Complex32::new(0.0, 0.0); n_fft],
+            fft_input,
+            fft_spectrum,
         }
     }
 
@@ -262,8 +264,9 @@ impl SpectrumAnalyzer {
 
         self.ensure_plan();
         self.fill_fft_input_hann();
-        self.fft_spectrum.copy_from_slice(&self.fft_input);
-        self.fft.process(&mut self.fft_spectrum);
+        self.fft
+            .process(&mut self.fft_input, &mut self.fft_spectrum)
+            .expect("realfft input/output lengths must match planned FFT length");
 
         let mut bands = Vec::with_capacity(self.num_bands);
         let nyquist = sample_rate_hz as f32 * 0.5;
@@ -319,10 +322,13 @@ impl SpectrumAnalyzer {
     fn ensure_plan(&mut self) {
         if self.fft.len() != self.n_fft {
             self.fft = self.fft_planner.plan_fft_forward(self.n_fft);
+            self.fft_input = self.fft.make_input_vec();
+            self.fft_spectrum = self.fft.make_output_vec();
         }
     }
 
     fn fill_fft_input_hann(&mut self) {
+        self.fft_input.fill(0.0);
         let len = self.history.len();
         for (i, sample) in self.history.iter().enumerate() {
             let window = if len > 1 {
@@ -332,7 +338,7 @@ impl SpectrumAnalyzer {
             } else {
                 1.0
             };
-            self.fft_input[i] = Complex32::new(sample * window, 0.0);
+            self.fft_input[i] = sample * window;
         }
     }
 }
