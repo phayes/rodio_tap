@@ -1,4 +1,4 @@
-use rodio::{Decoder, DeviceSinkBuilder, Player};
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use rodio_tap::{FrameReader, FrameReaderConfig, TapReader};
 use std::error::Error;
 use std::fs::File;
@@ -18,16 +18,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output_path = temp_output_path();
     println!("Recording to {}", output_path.display());
 
-    let mut sink_handle = DeviceSinkBuilder::open_default_sink()?;
-    sink_handle.log_on_drop(false);
-    let player = Player::connect_new(sink_handle.mixer());
+    let mut stream = OutputStreamBuilder::open_default_stream()?;
+    stream.log_on_drop(false);
+    let sink = Sink::connect_new(stream.mixer());
 
     // Queue lets us chain any number of input decoders into one continuous source stream.
     let (queue_in, queue_out) = rodio::queue::queue(false);
 
     // Tap the mixed queue output so we can both hear it and inspect frames.
     let (tap_reader, tap_adapter) = TapReader::<MAX_INPUT_CHANNELS>::new(queue_out);
-    player.append(tap_adapter);
+    sink.append(tap_adapter);
 
     for wav_path in &wav_paths {
         let file = File::open(wav_path)?;
@@ -61,8 +61,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     });
 
-    player.play();
-    wait_for_playback_end(&player);
+    sink.play();
+    wait_for_playback_end(&sink);
 
     // Give the reader thread a final moment to drain buffered packets.
     thread::sleep(Duration::from_millis(150));
@@ -210,8 +210,8 @@ fn resample_batch_to_mono_fixed_rate(
     out
 }
 
-fn wait_for_playback_end(player: &Player) {
-    while !player.empty() {
+fn wait_for_playback_end(sink: &Sink) {
+    while !sink.empty() {
         thread::sleep(Duration::from_millis(80));
     }
     thread::sleep(Duration::from_millis(100));

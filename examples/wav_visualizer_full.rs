@@ -1,7 +1,7 @@
 use arc_swap::ArcSwapOption;
 use realfft::num_complex::Complex32;
 use realfft::{RealFftPlanner, RealToComplex};
-use rodio::{Decoder, DeviceSinkBuilder, Player};
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use rodio_tap::{FrameReader, FrameReaderConfig, TapReader};
 use std::collections::VecDeque;
 use std::error::Error;
@@ -33,9 +33,9 @@ struct CliArgs {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_cli_args()?;
 
-    let mut sink_handle = DeviceSinkBuilder::open_default_sink()?;
-    sink_handle.log_on_drop(false);
-    let player = Player::connect_new(sink_handle.mixer());
+    let mut stream = OutputStreamBuilder::open_default_stream()?;
+    stream.log_on_drop(false);
+    let sink = Sink::connect_new(stream.mixer());
 
     // Build one of two example pipelines:
     //
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         TapMode::SingleTap => {
             let (queue_in, queue_out) = rodio::queue::queue(false);
             let (tap_reader, tap_adapter) = TapReader::<2>::new(queue_out);
-            player.append(tap_adapter);
+            sink.append(tap_adapter);
 
             for wav_path in &args.wav_paths {
                 let file = File::open(wav_path)?;
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let decoder = Decoder::new(BufReader::new(file))?;
                 let (_tap_reader, tap_adapter) =
                     TapReader::<2>::new_with_publish_target(&current_tap, decoder);
-                player.append(tap_adapter);
+                sink.append(tap_adapter);
             }
 
             let current_tap = Arc::clone(&current_tap);
@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    player.play();
+    sink.play();
 
     let _terminal = TerminalGuard::new()?;
     let visualizer = Arc::new(Mutex::new(Visualizer::new(FFT_SIZE, NUM_BANDS)));
@@ -110,13 +110,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     });
 
-    wait_for_playback_end(&player);
+    wait_for_playback_end(&sink);
 
     Ok(())
 }
 
-fn wait_for_playback_end(player: &Player) {
-    while !player.empty() {
+fn wait_for_playback_end(sink: &Sink) {
+    while !sink.empty() {
         thread::sleep(Duration::from_millis(80));
     }
     thread::sleep(Duration::from_millis(100));

@@ -1,4 +1,4 @@
-use rodio::{Decoder, DeviceSinkBuilder, Player};
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use rodio_tap::{TapReader, Visualizer, VisualizerConfig};
 use std::error::Error;
 use std::fs::File;
@@ -13,13 +13,13 @@ const BAR_WIDTH: usize = 40;
 fn main() -> Result<(), Box<dyn Error>> {
     let wav_paths = parse_cli_paths()?;
 
-    let mut sink_handle = DeviceSinkBuilder::open_default_sink()?;
-    sink_handle.log_on_drop(false);
-    let player = Player::connect_new(sink_handle.mixer());
+    let mut stream = OutputStreamBuilder::open_default_stream()?;
+    stream.log_on_drop(false);
+    let sink = Sink::connect_new(stream.mixer());
 
     let (queue_in, queue_out) = rodio::queue::queue(false);
     let (tap_reader, tap_adapter) = TapReader::<2>::new(queue_out);
-    player.append(tap_adapter);
+    sink.append(tap_adapter);
 
     for wav_path in &wav_paths {
         let file = File::open(wav_path)?;
@@ -46,8 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     });
 
-    player.play();
-    while !player.empty() {
+    sink.play();
+    while !sink.empty() {
         thread::sleep(Duration::from_millis(80));
     }
     thread::sleep(Duration::from_millis(100));

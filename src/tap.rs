@@ -1,7 +1,6 @@
 use arc_swap::ArcSwapOption;
 use arrayvec::ArrayVec;
 use cpal::Sample;
-use rodio::SampleRate;
 use rodio::source::SeekError;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::Arc;
@@ -79,9 +78,9 @@ impl<S: rodio::Source, const C: usize> TapAdapter<S, C> {
     pub fn new(inner: S, prod: Producer<TapPacket<C>>, on_start: Option<OnFirstSample<C>>) -> Self {
         assert!(C > 0, "TapAdapter requires generic C > 0");
 
-        let src_channels = inner.channels().get() as usize;
+        let src_channels = inner.channels() as usize;
         let out_channels = src_channels.min(C).max(1);
-        let sample_rate_hz: u32 = inner.sample_rate().into();
+        let sample_rate_hz = inner.sample_rate();
         let span_remaining = inner.current_span_len();
 
         Self {
@@ -173,9 +172,9 @@ impl<S: rodio::Source, const C: usize> TapAdapter<S, C> {
         self.frame_buf.clear();
         self.src_frame_pos = 0;
 
-        let new_src_channels = self.inner.channels().get() as usize;
+        let new_src_channels = self.inner.channels() as usize;
         let new_out_channels = new_src_channels.min(C).max(1);
-        let new_sample_rate_hz: u32 = self.inner.sample_rate().into();
+        let new_sample_rate_hz = self.inner.sample_rate();
 
         if new_out_channels != self.active_out_channels
             || new_sample_rate_hz != self.active_sample_rate_hz
@@ -238,12 +237,12 @@ where
     }
 
     #[inline]
-    fn channels(&self) -> std::num::NonZero<u16> {
+    fn channels(&self) -> u16 {
         self.inner.channels()
     }
 
     #[inline]
-    fn sample_rate(&self) -> SampleRate {
+    fn sample_rate(&self) -> u32 {
         self.inner.sample_rate()
     }
 
@@ -257,9 +256,9 @@ where
         self.inner.try_seek(pos)?;
         self.frame_buf.clear();
         self.src_frame_pos = 0;
-        self.active_src_channels = self.inner.channels().get() as usize;
+        self.active_src_channels = self.inner.channels() as usize;
         self.active_out_channels = self.active_src_channels.min(C).max(1);
-        self.active_sample_rate_hz = self.inner.sample_rate().into();
+        self.active_sample_rate_hz = self.inner.sample_rate();
         self.span_remaining = self.inner.current_span_len();
         self.format_dirty = true;
         Ok(())
@@ -436,7 +435,6 @@ mod tests {
     use super::*;
     use rodio::Source;
     use std::collections::VecDeque;
-    use std::num::NonZero;
 
     #[derive(Clone)]
     struct SpanChunk {
@@ -489,19 +487,15 @@ mod tests {
             self.current.as_ref().map(|c| c.samples.len())
         }
 
-        fn channels(&self) -> NonZero<u16> {
-            let c = self.current.as_ref().map(|c| c.channels).unwrap_or(2);
-            NonZero::new(c).unwrap()
+        fn channels(&self) -> u16 {
+            self.current.as_ref().map(|c| c.channels).unwrap_or(2)
         }
 
-        fn sample_rate(&self) -> SampleRate {
-            NonZero::new(
-                self.current
-                    .as_ref()
-                    .map(|c| c.sample_rate_hz)
-                    .unwrap_or(48_000),
-            )
-            .unwrap()
+        fn sample_rate(&self) -> u32 {
+            self.current
+                .as_ref()
+                .map(|c| c.sample_rate_hz)
+                .unwrap_or(48_000)
         }
 
         fn total_duration(&self) -> Option<Duration> {

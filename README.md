@@ -130,7 +130,7 @@ This crate exposes SIMD feature flags that forward directly to `realfft`:
 
 ```rust
 use rodio::source::SineWave;
-use rodio::{DeviceSinkBuilder, Player, Source};
+use rodio::{OutputStreamBuilder, Source};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -144,11 +144,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tap_reader, tap_adapter) = TapReader::<2>::new(tone);
 
     // Play audio through rodio.
-    let mut sink = DeviceSinkBuilder::open_default_sink()?;
-    sink.log_on_drop(false);
-    let player = Player::connect_new(sink.mixer());
-    player.append(tap_adapter);
-    player.play();
+    let mut stream = OutputStreamBuilder::open_default_stream()?;
+    stream.log_on_drop(false);
+    let sink = rodio::Sink::connect_new(stream.mixer());
+    sink.append(tap_adapter);
+    sink.play();
 
     // Visualizer callback runs forever, so run it on a worker thread.
     let tap_for_visualizer = Arc::clone(&tap_reader);

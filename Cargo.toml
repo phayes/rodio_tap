@@ -10,11 +10,11 @@ documentation = "https://docs.rs/rodio_tap"
 authors = ["Patrick Hayes <patrick.d.hayes@gmail.com>"]
 
 [dependencies]
-rodio = "0.22"
+rodio = "0.21"
 rtrb = "0.3"
 arc-swap = "1"
 arrayvec = "0.7"
-cpal = "0.17"
+cpal = "0.16"
 log = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["rt", "time"], default-features = false, optional = true }
 realfft = { version = "3", optional = true }

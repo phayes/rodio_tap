@@ -1,4 +1,4 @@
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 use rodio_tap::{FrameReader, FrameReaderConfig, TapReader};
 use std::error::Error;
 use std::fs::File;
@@ -16,13 +16,13 @@ const MAX_CHANNELS: usize = 64;
 fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_cli_args()?;
 
-    let mut sink_handle = DeviceSinkBuilder::open_default_sink()?;
-    sink_handle.log_on_drop(false);
-    let player = Player::connect_new(sink_handle.mixer());
+    let mut stream = OutputStreamBuilder::open_default_stream()?;
+    stream.log_on_drop(false);
+    let sink = Sink::connect_new(stream.mixer());
 
     let (queue_in, queue_out) = rodio::queue::queue(false);
     let (tap_reader, tap_adapter) = TapReader::<MAX_CHANNELS>::new(queue_out);
-    player.append(tap_adapter);
+    sink.append(tap_adapter);
 
     if args.loop_playback {
         if args.wav_paths.len() != 1 {
@@ -69,13 +69,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     });
 
-    player.play();
+    sink.play();
     if args.loop_playback {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
     } else {
-        wait_for_playback_end(&player);
+        wait_for_playback_end(&sink);
         println!("\nPlayback finished.");
     }
     Ok(())
@@ -152,8 +152,8 @@ impl CallbackLatencyMeter {
     }
 }
 
-fn wait_for_playback_end(player: &Player) {
-    while !player.empty() {
+fn wait_for_playback_end(sink: &Sink) {
+    while !sink.empty() {
         thread::sleep(Duration::from_millis(80));
     }
     thread::sleep(Duration::from_millis(100));
