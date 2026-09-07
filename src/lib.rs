@@ -12,11 +12,18 @@ pub use tap::*;
 ///
 /// You must specify at least one of `time_per_batch` or `frames_per_batch`
 ///
+/// A completed batch is delivered at the end of the audio duration it
+/// represents. Readers consume at most one ready batch per deadline, so a
+/// producer-side buffer or accumulated ring backlog does not cause callback
+/// bursts. If callback work misses a deadline, pacing rebases instead of
+/// emitting multiple catch-up callbacks.
+///
 /// Real-time tuning (suggested starting point for very low-latency use cases):
 /// - `frames_per_batch: Some(64)` (equivalent to 128 sample buffer size in stereo)
 /// - `time_per_batch: None` (use fixed frame batches)
 /// - `sleep_bias: 0.5` (wake earlier to avoid late batch delivery)
 /// - `min_sleep: Duration::from_micros(5)` (tiny cooperative sleep)
+#[derive(Debug, Clone)]
 pub struct FrameReaderConfig {
     /// Target batch duration.
     ///
@@ -85,5 +92,7 @@ mod visualizer;
 #[cfg(feature = "visualizer")]
 pub use visualizer::*;
 
+mod batch;
 mod frame_reader;
+mod reader_core;
 pub use frame_reader::*;

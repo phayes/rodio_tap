@@ -16,7 +16,7 @@ Use it when you want to analyze, visualize, meter, or record playback data in re
 - `TapReader` + `TapAdapter`: low-level packet ring-buffer access.
 - `FrameReader`: synchronous high-level reader that yields frame batches.
 - `AsyncFrameReader` (feature `async`): async high-level reader for Tokio runtimes.
-- `Visualizer` (feature `visualizer`): callback-driven FFT bins + peak/rms per channel.
+- `Visualizer` (feature `visualizer`): callback-driven multi-resolution FFT bins + peak/rms per channel.
 
 ## Installation
 
@@ -66,6 +66,8 @@ let tap_for_reader = Arc::clone(&tap_reader);
 thread::spawn(move || {
     // Create a stereo (2 channel) frame reader
     let mut reader = FrameReader::<2>::new(move || Some(Arc::clone(&tap_for_reader)));
+    // Batches are delayed by their represented audio duration, so buffered
+    // source data is delivered at playback cadence instead of in a burst.
     reader.run(|batch, channels, sample_rate_hz| {
         let frames = batch.len();
         println!("{} frames @ {} Hz", frames, sample_rate_hz);
@@ -120,7 +122,10 @@ async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
 
 `Visualizer` (feature `visualizer`) provides an abstract for building music visualizers. 
 
-Internally, `Visualizer` uses `realfft` for real-to-complex FFT processing.
+Internally, `Visualizer` uses `realfft` for real-to-complex FFT processing. It
+runs a long bass FFT and a short upper-frequency FFT on every emission hop.
+This gives bass bins finer frequency resolution without making upper-frequency
+transients depend on the full bass window.
 
 This crate exposes SIMD feature flags that forward directly to `realfft`:
 - `avx`
@@ -154,7 +159,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tap_for_visualizer = Arc::clone(&tap_reader);
     thread::spawn(move || {
         let config = VisualizerConfig {
-            period: Duration::from_millis(33), // ~30 FPS updates
+            emit_period: Duration::from_millis(33), // ~30 FPS updates
+            bass_window_duration: Duration::from_millis(170),
+            upper_window_duration: Duration::from_millis(33),
+            crossover_frequency_hz: 250.0,
+            decimation: true, // automatically reduce the FFT analysis rate when safe
             transform: Transform::FourierLog(28), // default transform
             ..Default::default()
         };
@@ -194,6 +203,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 pipeline paths when configured for low latency. In release mode, typical 
 overhead is very small (often around ~100 ns).
 
+`TapAdapter` and the low-level `TapReader` remain eager and never sleep on the
+audio path. Playback-time delaying is performed only by `FrameReader` and
+`AsyncFrameReader`. Their batching decisions are shared, while blocking
+`std::thread` waits and Tokio async waits are implemented independently.
+
 Suggested low-latency `FrameReaderConfig` starting point:
 
 - `frames_per_batch: Some(64)` (equivalent to 128 sample buffer size in stereo)
@@ -209,7 +223,7 @@ CoreAudio, WASAPI, and JACK style pipelines.
 
 ### [`wav_visualizer_full`](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_full.rs)
 
-Terminal FFT visualizer with explicit pipeline wiring and rendering logic.
+Terminal multi-resolution visualizer with explicit tap switching and rendering logic.
 
 ```bash
 cargo run --example wav_visualizer_full -- examples/example.wav

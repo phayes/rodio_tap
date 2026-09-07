@@ -32,7 +32,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tap_for_reader = Arc::clone(&tap_reader);
     thread::spawn(move || {
         let config = VisualizerConfig {
-            period: Duration::from_millis(33),
+            emit_period: Duration::from_millis(33),
+            bass_window_duration: Duration::from_millis(170),
+            upper_window_duration: Duration::from_millis(33),
             ..Default::default()
         };
         let frequency_bins = config.frequency_bins();
@@ -80,7 +82,7 @@ fn render(
     )?;
 
     for (idx, &magnitude) in channel.bins.iter().enumerate() {
-        let bars = magnitude.round().clamp(0.0, BAR_WIDTH as f32) as usize;
+        let bars = (magnitude.clamp(0.0, 1.0) * BAR_WIDTH as f32).round() as usize;
         let bar = "#".repeat(bars);
         let freq = frequency_bins.get(idx);
         writeln!(

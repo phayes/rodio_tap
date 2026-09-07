@@ -21,7 +21,6 @@ realfft = { version = "3", optional = true }
 
 [dev-dependencies]
 hound = "3"
-realfft = "3"
 
 [features]
 async = ["tokio"]
@@ -34,6 +33,7 @@ wasm_simd = ["dep:realfft", "realfft/wasm_simd"]
 [[example]]
 name = "wav_visualizer_full"
 path = "examples/wav_visualizer_full.rs"
+required-features = ["visualizer"]
 
 [[example]]
 name = "wav_visualizer_simple"
