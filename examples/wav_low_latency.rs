@@ -61,11 +61,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
         let mut meter = CallbackLatencyMeter::new(args.window_seconds);
 
-        reader.run(move |batch, channels, sample_rate_hz| {
-            if batch.is_empty() || sample_rate_hz == 0 {
+        reader.run(move |batch| {
+            if batch.frames.is_empty() || batch.sample_rate_hz == 0 {
                 return;
             }
-            meter.on_batch(batch.len() as u32, channels, sample_rate_hz);
+            meter.on_batch(
+                batch.frames.len() as u32,
+                batch.channels,
+                batch.sample_rate_hz,
+            );
         });
     });
 

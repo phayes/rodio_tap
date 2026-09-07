@@ -52,12 +52,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Some(Arc::clone(&tap_for_reader))
             });
 
-        frame_reader.run(move |batch, channels, sample_rate_hz| {
-            if batch.is_empty() || channels == 0 {
+        frame_reader.run(move |batch| {
+            if batch.frames.is_empty() || batch.channels == 0 {
                 return;
             }
             // Convert and write incrementally each callback
-            recorder.process_batch(batch, channels, sample_rate_hz);
+            recorder.process_batch(batch.frames, batch.channels, batch.sample_rate_hz);
         });
     });
 

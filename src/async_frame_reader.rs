@@ -1,8 +1,7 @@
 use crate::reader_core::ReaderCore;
-use crate::{FrameReaderConfig, TapReader};
-use arrayvec::ArrayVec;
+use crate::{FrameBatch, FrameReaderConfig, TapReader};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Tokio high-level reader for playback-paced tapped frame batches.
 ///
@@ -47,10 +46,10 @@ impl<const C: usize> AsyncFrameReader<C> {
         }
     }
 
-    /// Run forever, asynchronously delivering each batch on its playback deadline.
+    /// Run forever, asynchronously delivering each [`FrameBatch`] on its playback deadline.
     pub async fn run<F>(&mut self, mut on_batch: F) -> !
     where
-        F: FnMut(&[ArrayVec<f32, C>], usize, u32) + Send + 'static,
+        F: FnMut(FrameBatch<'_, C>) + Send + 'static,
     {
         loop {
             if !self.core.has_consumer() {
@@ -64,13 +63,36 @@ impl<const C: usize> AsyncFrameReader<C> {
                 }
             }
 
-            if let Some(batch) = self.core.read_ready_batch() {
-                let deadline = self.core.schedule(batch.duration, Instant::now());
+            if let Some(mut batch) = self.core.read_ready_batch() {
+                let now = Instant::now();
+                let plan = self.core.schedule(batch.duration, now);
+                let mut deadline = plan.deadline;
+                let mut dropped_batches = 0;
+                let mut dropped_duration = Duration::ZERO;
+                for _ in 0..plan.late_batches {
+                    let Some(next_batch) = self.core.read_ready_batch() else {
+                        break;
+                    };
+                    dropped_batches += 1;
+                    dropped_duration = dropped_duration.saturating_add(batch.duration);
+                    deadline = deadline
+                        .checked_add(next_batch.duration)
+                        .unwrap_or(deadline);
+                    self.core.recycle(batch.frames);
+                    batch = next_batch;
+                }
+                self.core.commit_schedule(deadline);
                 let wait = deadline.saturating_duration_since(Instant::now());
                 if !wait.is_zero() {
                     tokio::time::sleep(wait).await;
                 }
-                on_batch(&batch.frames, batch.channels, batch.sample_rate_hz);
+                on_batch(FrameBatch {
+                    frames: &batch.frames,
+                    channels: batch.channels,
+                    sample_rate_hz: batch.sample_rate_hz,
+                    dropped_batches,
+                    dropped_duration,
+                });
                 self.core.recycle(batch.frames);
                 continue;
             }

@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tap_for_reader = Arc::clone(&tap_reader);
     thread::spawn(move || {
         let config = VisualizerConfig {
-            emit_period: Duration::from_millis(33),
+            period: Duration::from_millis(33),
             bass_window_duration: Duration::from_millis(170),
             upper_window_duration: Duration::from_millis(33),
             ..Default::default()

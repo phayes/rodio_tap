@@ -68,11 +68,11 @@ thread::spawn(move || {
     let mut reader = FrameReader::<2>::new(move || Some(Arc::clone(&tap_for_reader)));
     // Batches are delayed by their represented audio duration, so buffered
     // source data is delivered at playback cadence instead of in a burst.
-    reader.run(|batch, channels, sample_rate_hz| {
-        let frames = batch.len();
-        println!("{} frames @ {} Hz", frames, sample_rate_hz);
+    reader.run(|batch| {
+        let frames = batch.frames.len();
+        println!("{} frames @ {} Hz", frames, batch.sample_rate_hz);
 
-        for frame in batch {
+        for frame in batch.frames {
             let _ = frame;
             // Process one interleaved frame.
         }
@@ -109,9 +109,9 @@ use rodio_tap::AsyncFrameReader;
 async fn run_reader(tap: Arc<rodio_tap::TapReader<2>>) {
     let mut reader = AsyncFrameReader::<2>::new(move || Some(Arc::clone(&tap)));
     reader
-        .run(|batch, channels, sample_rate_hz| {
-            let frames = batch.len();
-            println!("{} frames @ {} Hz", frames, sample_rate_hz);
+        .run(|batch| {
+            let frames = batch.frames.len();
+            println!("{} frames @ {} Hz", frames, batch.sample_rate_hz);
         })
         .await;
 }
@@ -159,11 +159,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tap_for_visualizer = Arc::clone(&tap_reader);
     thread::spawn(move || {
         let config = VisualizerConfig {
-            emit_period: Duration::from_millis(33), // ~30 FPS updates
+            period: Duration::from_millis(33), // ~30 FPS updates
             bass_window_duration: Duration::from_millis(170),
             upper_window_duration: Duration::from_millis(33),
             crossover_frequency_hz: 250.0,
             decimation: true, // automatically reduce the FFT analysis rate when safe
+            drop_late_batches: true, // stay near live playback if analysis falls behind
             transform: Transform::FourierLog(28), // default transform
             ..Default::default()
         };
@@ -213,6 +214,8 @@ Suggested low-latency `FrameReaderConfig` starting point:
 - `time_per_batch: None` (use fixed frame batches)
 - `sleep_bias: 0.5` (wake earlier to avoid late batch delivery)
 - `min_sleep: Duration::from_micros(5)` (tiny cooperative sleep)
+- `drop_late_batches: true` for live displays that should recover toward current playback;
+  leave it `false` when every frame must be preserved
 - Run in `--release` mode for realistic performance numbers
 
 This profile is generally appropriate for real-time use cases such as ASIO,

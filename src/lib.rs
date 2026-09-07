@@ -65,6 +65,16 @@ pub struct FrameReaderConfig {
     ///
     /// Default: `Duration::from_millis(100)`.
     pub max_sleep: Duration,
+    /// Whether to discard queued callback batches when processing falls behind.
+    ///
+    /// When enabled, the reader skips one queued batch for each complete batch
+    /// interval of lateness. It does not drain future prebuffered audio. This is
+    /// useful for live meters and visualizers that should recover toward the
+    /// current playback position.
+    /// Keep it disabled for recording or analysis that must preserve every frame.
+    ///
+    /// Default: `false`.
+    pub drop_late_batches: bool,
 }
 
 impl Default for FrameReaderConfig {
@@ -76,8 +86,26 @@ impl Default for FrameReaderConfig {
             sleep_bias: 0.75,
             min_sleep: Duration::from_micros(150), // tiny but nonzero to be cooperative
             max_sleep: Duration::from_millis(100),
+            drop_late_batches: false,
         }
     }
+}
+
+/// A playback-paced frame batch delivered by [`FrameReader`] or [`AsyncFrameReader`].
+#[derive(Debug)]
+pub struct FrameBatch<'a, const C: usize> {
+    /// Audio frames in this callback batch.
+    pub frames: &'a [arrayvec::ArrayVec<f32, C>],
+    /// Active channel count represented by each frame.
+    pub channels: usize,
+    /// Active stream sample rate.
+    pub sample_rate_hz: u32,
+    /// Number of older callback batches discarded immediately before this batch.
+    ///
+    /// This is always zero when [`FrameReaderConfig::drop_late_batches`] is disabled.
+    pub dropped_batches: usize,
+    /// Audio duration represented by the discarded batches.
+    pub dropped_duration: Duration,
 }
 
 #[cfg(feature = "async")]

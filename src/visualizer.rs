@@ -5,7 +5,7 @@
 //! 1. Pull tapped frame batches from a `TapReader` via `FrameReader`.
 //! 2. Maintain per-channel rolling sample history.
 //! 3. Run long bass and short upper-frequency FFT windows at
-//!    [`VisualizerConfig::emit_period`] cadence.
+//!    [`VisualizerConfig::period`] cadence.
 //! 4. Emit per-hop peak/RMS plus normalized multi-resolution frequency magnitudes.
 //!
 //! The bin layout (`hz_lo` / `hz_hi`) is fixed by config, while each callback's effective
@@ -43,7 +43,7 @@
 //!     let tap_for_visualizer = Arc::clone(&tap_reader);
 //!     thread::spawn(move || {
 //!         let config = VisualizerConfig {
-//!             emit_period: Duration::from_millis(33), // ~30 FPS updates
+//!             period: Duration::from_millis(33), // ~30 FPS updates
 //!             bass_window_duration: Duration::from_millis(170),
 //!             upper_window_duration: Duration::from_millis(33),
 //!             ..Default::default()
@@ -117,10 +117,10 @@ pub enum Transform {
 /// Error returned by visualizer configuration validation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VisualizerError {
-    EmitPeriodMustBePositive,
+    PeriodMustBePositive,
     BassWindowMustBePositive,
     UpperWindowMustBePositive,
-    WindowMustNotBeShorterThanEmitPeriod,
+    WindowMustNotBeShorterThanPeriod,
     BassWindowMustNotBeShorterThanUpperWindow,
     CrossoverMustBeWithinFrequencyRange {
         crossover_frequency_hz: f32,
@@ -148,8 +148,8 @@ pub enum VisualizerError {
 impl std::fmt::Display for VisualizerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VisualizerError::EmitPeriodMustBePositive => {
-                write!(f, "VisualizerConfig.emit_period must be > 0")
+            VisualizerError::PeriodMustBePositive => {
+                write!(f, "VisualizerConfig.period must be > 0")
             }
             VisualizerError::BassWindowMustBePositive => {
                 write!(f, "VisualizerConfig.bass_window_duration must be > 0")
@@ -157,8 +157,8 @@ impl std::fmt::Display for VisualizerError {
             VisualizerError::UpperWindowMustBePositive => {
                 write!(f, "VisualizerConfig.upper_window_duration must be > 0")
             }
-            VisualizerError::WindowMustNotBeShorterThanEmitPeriod => {
-                write!(f, "visualizer FFT windows must be at least emit_period")
+            VisualizerError::WindowMustNotBeShorterThanPeriod => {
+                write!(f, "visualizer FFT windows must be at least period")
             }
             VisualizerError::BassWindowMustNotBeShorterThanUpperWindow => {
                 write!(
@@ -360,7 +360,7 @@ impl Transform {
 /// The built-in synchronous and asynchronous runners provide playback pacing.
 pub struct VisualizerConfig {
     /// Target callback cadence and analysis hop. Default: 33 ms.
-    pub emit_period: Duration,
+    pub period: Duration,
     /// Long analysis window used below `crossover_frequency_hz`. Default: 170 ms.
     pub bass_window_duration: Duration,
     /// Short analysis window used at and above `crossover_frequency_hz`. Default: 33 ms.
@@ -391,12 +391,25 @@ pub struct VisualizerConfig {
     ///
     /// Default: `true`.
     pub decimation: bool,
+    /// Whether visualizer runners discard queued batches when analysis falls behind.
+    ///
+    /// When enabled, one queued batch is skipped for each complete emission interval
+    /// of lateness, allowing callbacks to recover toward current playback without
+    /// draining future prebuffered audio. Analysis history is reset after a skip so
+    /// samples from opposite sides of the discontinuity are not placed next to each
+    /// other in an FFT window. This setting affects
+    /// [`Visualizer::run_with_frame_reader`] and
+    /// [`Visualizer::run_with_frame_reader_async`], but not direct
+    /// [`Visualizer::process_batch`] calls.
+    ///
+    /// Default: `true`.
+    pub drop_late_batches: bool,
 }
 
 impl Default for VisualizerConfig {
     fn default() -> Self {
         Self {
-            emit_period: Duration::from_millis(33),
+            period: Duration::from_millis(33),
             bass_window_duration: Duration::from_millis(170),
             upper_window_duration: Duration::from_millis(33),
             crossover_frequency_hz: 250.0,
@@ -404,14 +417,15 @@ impl Default for VisualizerConfig {
             min_frequency_hz: LOW_FREQUENCY_HUMAN,
             max_frequency_hz: TOP_FREQUENCY_HUMAN,
             decimation: true,
+            drop_late_batches: true,
         }
     }
 }
 
 impl VisualizerConfig {
     pub fn validate(&self) -> Result<(), VisualizerError> {
-        if self.emit_period.is_zero() {
-            return Err(VisualizerError::EmitPeriodMustBePositive);
+        if self.period.is_zero() {
+            return Err(VisualizerError::PeriodMustBePositive);
         }
         if self.bass_window_duration.is_zero() {
             return Err(VisualizerError::BassWindowMustBePositive);
@@ -419,10 +433,8 @@ impl VisualizerConfig {
         if self.upper_window_duration.is_zero() {
             return Err(VisualizerError::UpperWindowMustBePositive);
         }
-        if self.bass_window_duration < self.emit_period
-            || self.upper_window_duration < self.emit_period
-        {
-            return Err(VisualizerError::WindowMustNotBeShorterThanEmitPeriod);
+        if self.bass_window_duration < self.period || self.upper_window_duration < self.period {
+            return Err(VisualizerError::WindowMustNotBeShorterThanPeriod);
         }
         if self.bass_window_duration < self.upper_window_duration {
             return Err(VisualizerError::BassWindowMustNotBeShorterThanUpperWindow);
@@ -727,7 +739,7 @@ impl ChannelDecimator {
 ///     let tap_for_visualizer = Arc::clone(&tap_reader);
 ///     thread::spawn(move || {
 ///         let config = VisualizerConfig {
-///             emit_period: Duration::from_millis(33),
+///             period: Duration::from_millis(33),
 ///             bass_window_duration: Duration::from_millis(170),
 ///             upper_window_duration: Duration::from_millis(33),
 ///             ..Default::default()
@@ -831,16 +843,22 @@ impl<const C: usize> Visualizer<C> {
         F: FnMut(&[ChannelSpectrum], u32) + Send + 'static,
     {
         let reader_config = FrameReaderConfig {
-            time_per_batch: Some(config.emit_period),
+            time_per_batch: Some(config.period),
             frames_per_batch: None,
+            drop_late_batches: config.drop_late_batches,
             ..Default::default()
         };
         let mut reader = FrameReader::<C>::new_with_config(reader_config, tap_fn);
         let mut visualizer = Visualizer::<C>::new(config)
             .unwrap_or_else(|err| panic!("Visualizer config is invalid: {err}"));
 
-        reader.run(move |batch, channels, sample_rate_hz| {
-            for frame in visualizer.process_batch(batch, channels, sample_rate_hz) {
+        reader.run(move |batch| {
+            if batch.dropped_batches > 0 {
+                visualizer.reset_format(batch.channels, batch.sample_rate_hz);
+            }
+            for frame in
+                visualizer.process_batch(batch.frames, batch.channels, batch.sample_rate_hz)
+            {
                 callback(&frame.channels, frame.sample_rate_hz);
             }
         });
@@ -862,8 +880,9 @@ impl<const C: usize> Visualizer<C> {
         F: FnMut(&[ChannelSpectrum], u32) + Send + 'static,
     {
         let reader_config = FrameReaderConfig {
-            time_per_batch: Some(config.emit_period),
+            time_per_batch: Some(config.period),
             frames_per_batch: None,
+            drop_late_batches: config.drop_late_batches,
             ..Default::default()
         };
         let mut reader = AsyncFrameReader::<C>::new_with_config(reader_config, tap_fn);
@@ -871,8 +890,13 @@ impl<const C: usize> Visualizer<C> {
             .unwrap_or_else(|err| panic!("Visualizer config is invalid: {err}"));
 
         reader
-            .run(move |batch, channels, sample_rate_hz| {
-                for frame in visualizer.process_batch(batch, channels, sample_rate_hz) {
+            .run(move |batch| {
+                if batch.dropped_batches > 0 {
+                    visualizer.reset_format(batch.channels, batch.sample_rate_hz);
+                }
+                for frame in
+                    visualizer.process_batch(batch.frames, batch.channels, batch.sample_rate_hz)
+                {
                     callback(&frame.channels, frame.sample_rate_hz);
                 }
             })
@@ -929,7 +953,7 @@ impl<const C: usize> Visualizer<C> {
     fn reset_format(&mut self, channels: usize, sample_rate_hz: u32) {
         self.last_sample_rate_hz = Some(sample_rate_hz);
         self.last_channels = Some(channels);
-        self.hop_frames = duration_to_frames(self.config.emit_period, sample_rate_hz);
+        self.hop_frames = duration_to_frames(self.config.period, sample_rate_hz);
         self.hop_collected = 0;
         self.hop_peak.fill(0.0);
         self.hop_sum_sq.fill(0.0);
@@ -1330,12 +1354,12 @@ mod tests {
     #[test]
     fn visualizer_config_validate_checks_period() {
         let config = VisualizerConfig {
-            emit_period: Duration::from_nanos(0),
+            period: Duration::from_nanos(0),
             ..Default::default()
         };
         assert_eq!(
             config.validate(),
-            Err(VisualizerError::EmitPeriodMustBePositive)
+            Err(VisualizerError::PeriodMustBePositive)
         );
     }
 
@@ -1354,7 +1378,9 @@ mod tests {
 
     #[test]
     fn decimation_selects_safe_power_of_two_rates() {
-        assert!(VisualizerConfig::default().decimation);
+        let defaults = VisualizerConfig::default();
+        assert!(defaults.decimation);
+        assert!(defaults.drop_late_batches);
         assert_eq!(decimation_stages(44_100, true, 20_000.0), 0);
         assert_eq!(decimation_stages(96_000, true, 20_000.0), 1);
         assert_eq!(decimation_stages(192_000, true, 20_000.0), 2);
@@ -1405,7 +1431,7 @@ mod tests {
     #[test]
     fn oversized_input_emits_every_completed_hop() {
         let config = VisualizerConfig {
-            emit_period: Duration::from_millis(2),
+            period: Duration::from_millis(2),
             bass_window_duration: Duration::from_millis(8),
             upper_window_duration: Duration::from_millis(2),
             crossover_frequency_hz: 200.0,
@@ -1453,7 +1479,7 @@ mod tests {
     fn bass_and_upper_windows_have_comparable_normalized_gain() {
         let sample_rate = 4_096_u32;
         let config = VisualizerConfig {
-            emit_period: Duration::from_millis(125),
+            period: Duration::from_millis(125),
             bass_window_duration: Duration::from_secs(1),
             upper_window_duration: Duration::from_millis(125),
             crossover_frequency_hz: 250.0,
@@ -1464,6 +1490,7 @@ mod tests {
                 FrequencyBin::new(999.0, 1_001.0),
             ]),
             decimation: true,
+            drop_late_batches: true,
         };
         let samples = (0..sample_rate)
             .map(|index| {
@@ -1509,7 +1536,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let make_config = |decimation| VisualizerConfig {
-            emit_period: Duration::from_millis(16),
+            period: Duration::from_millis(16),
             bass_window_duration: Duration::from_millis(32),
             upper_window_duration: Duration::from_millis(32),
             crossover_frequency_hz: 1_000.0,
@@ -1520,6 +1547,7 @@ mod tests {
                 FrequencyBin::new(10_007.0, 10_008.0),
             ]),
             decimation,
+            drop_late_batches: true,
         };
 
         let mut source_rate = Visualizer::<1>::new(make_config(false)).unwrap();

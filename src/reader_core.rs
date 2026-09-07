@@ -5,6 +5,11 @@ use rtrb::Consumer;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub(crate) struct SchedulePlan {
+    pub(crate) deadline: Instant,
+    pub(crate) late_batches: usize,
+}
+
 pub(crate) struct ReaderCore<const C: usize> {
     config: FrameReaderConfig,
     active_consumer: Option<Consumer<TapPacket<C>>>,
@@ -186,19 +191,34 @@ impl<const C: usize> ReaderCore<C> {
         ready
     }
 
-    /// Place each batch at the end of its represented audio interval.
-    ///
-    /// If work falls behind, rebasing to `now` prevents a run of past deadlines from
-    /// turning into a callback burst.
-    pub(crate) fn schedule(&mut self, duration: Duration, now: Instant) -> Instant {
+    /// Plan delivery at the end of the batch's represented audio interval.
+    pub(crate) fn schedule(&self, duration: Duration, now: Instant) -> SchedulePlan {
         let candidate = self
             .next_deadline
             .and_then(|deadline| deadline.checked_add(duration))
             .or_else(|| now.checked_add(duration))
             .unwrap_or(now);
-        let deadline = candidate.max(now);
+        if !self.config.drop_late_batches {
+            return SchedulePlan {
+                deadline: candidate.max(now),
+                late_batches: 0,
+            };
+        }
+
+        let lateness = now.saturating_duration_since(candidate);
+        let late_batches = if duration.is_zero() {
+            0
+        } else {
+            usize::try_from(lateness.as_nanos() / duration.as_nanos()).unwrap_or(usize::MAX)
+        };
+        SchedulePlan {
+            deadline: candidate,
+            late_batches,
+        }
+    }
+
+    pub(crate) fn commit_schedule(&mut self, deadline: Instant) {
         self.next_deadline = Some(deadline);
-        deadline
     }
 
     pub(crate) fn sleep_for_missing(&self) -> Option<Duration> {
@@ -229,6 +249,7 @@ mod tests {
             sleep_bias: 0.75,
             min_sleep: Duration::from_micros(100),
             max_sleep: Duration::from_millis(5),
+            drop_late_batches: false,
         }
     }
 
@@ -237,11 +258,43 @@ mod tests {
         let mut core = ReaderCore::<2>::new(config());
         let start = Instant::now();
         let period = Duration::from_millis(10);
-        assert_eq!(core.schedule(period, start), start + period);
-        assert_eq!(core.schedule(period, start + period), start + period * 2);
+        let plan = core.schedule(period, start);
+        assert_eq!(plan.deadline, start + period);
+        assert_eq!(plan.late_batches, 0);
+        core.commit_schedule(plan.deadline);
+
+        let plan = core.schedule(period, start + period);
+        assert_eq!(plan.deadline, start + period * 2);
+        core.commit_schedule(plan.deadline);
+
         let late = start + Duration::from_millis(50);
-        assert_eq!(core.schedule(period, late), late);
-        assert_eq!(core.schedule(period, late), late + period);
+        let plan = core.schedule(period, late);
+        assert_eq!(plan.deadline, late);
+        core.commit_schedule(plan.deadline);
+
+        let plan = core.schedule(period, late);
+        assert_eq!(plan.deadline, late + period);
+    }
+
+    #[test]
+    fn drop_policy_skips_only_whole_late_batch_intervals() {
+        let mut config = config();
+        config.drop_late_batches = true;
+        let mut core = ReaderCore::<2>::new(config);
+        let start = Instant::now();
+        let period = Duration::from_millis(10);
+
+        let first = core.schedule(period, start);
+        core.commit_schedule(first.deadline);
+        let late = core.schedule(period, start + Duration::from_millis(45));
+        assert_eq!(late.deadline, start + Duration::from_millis(20));
+        assert_eq!(late.late_batches, 2);
+
+        let recovered_deadline = late.deadline + period * late.late_batches as u32;
+        core.commit_schedule(recovered_deadline);
+        let next = core.schedule(period, start + Duration::from_millis(45));
+        assert_eq!(next.deadline, start + Duration::from_millis(50));
+        assert_eq!(next.late_batches, 0);
     }
 
     #[test]
