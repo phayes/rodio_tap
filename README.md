@@ -177,12 +177,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             move |channels, sample_rate_hz| {
                 if let Some(ch0) = channels.first() {
-                    // Print only the first few bins for demo purposes.
-                    for (i, magnitude) in ch0.bins.iter().copied().take(5).enumerate() {
+                    for (i, value) in ch0.bins.iter().enumerate() {
                         let range = &bins[i];
                         println!(
                             "[{} Hz] {:>6.0}..{:>6.0} Hz => {:.4}",
-                            sample_rate_hz, range.hz_lo, range.hz_hi, magnitude
+                            sample_rate_hz, range.hz_lo, range.hz_hi, value.magnitude
                         );
                     }
                     println!("---");

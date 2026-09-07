@@ -81,8 +81,8 @@ fn render(
         }
     )?;
 
-    for (idx, &magnitude) in channel.bins.iter().enumerate() {
-        let bars = (magnitude.clamp(0.0, 1.0) * BAR_WIDTH as f32).round() as usize;
+    for (idx, value) in channel.bins.iter().enumerate() {
+        let bars = (value.magnitude.clamp(0.0, 1.0) * BAR_WIDTH as f32).round() as usize;
         let bar = "#".repeat(bars);
         let freq = frequency_bins.get(idx);
         writeln!(

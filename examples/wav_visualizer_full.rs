@@ -200,7 +200,7 @@ impl SpectrumRenderer {
         let observed_peak = channel
             .bins
             .iter()
-            .copied()
+            .map(|value| value.magnitude)
             .fold(self.level_floor, f32::max);
         self.level_floor = (self.level_floor * 0.94).max(observed_peak).max(1e-3);
 
@@ -211,8 +211,8 @@ impl SpectrumRenderer {
             sample_rate_hz, channel.peak, channel.rms
         )?;
 
-        for (band, magnitude) in bins.iter().zip(&channel.bins) {
-            let normalized = (magnitude / self.level_floor).clamp(0.0, 1.0);
+        for (band, value) in bins.iter().zip(&channel.bins) {
+            let normalized = (value.magnitude / self.level_floor).clamp(0.0, 1.0);
             let bars = (normalized * BAR_WIDTH as f32).round() as usize;
             let bar = "#".repeat(bars);
             writeln!(

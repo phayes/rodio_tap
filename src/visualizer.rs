@@ -56,11 +56,11 @@
 //!             move |channels, sample_rate_hz| {
 //!                 if let Some(ch0) = channels.first() {
 //!                     // Print only the first few bins for demo purposes.
-//!                     for (i, magnitude) in ch0.bins.iter().copied().take(5).enumerate() {
+//!                     for (i, value) in ch0.bins.iter().take(5).enumerate() {
 //!                         let range = &bins[i];
 //!                         println!(
 //!                             "[{} Hz] {:>6.0}..{:>6.0} Hz => {:.4}",
-//!                             sample_rate_hz, range.hz_lo, range.hz_hi, magnitude
+//!                             sample_rate_hz, range.hz_lo, range.hz_hi, value.magnitude
 //!                         );
 //!                     }
 //!                     println!("---");
@@ -448,7 +448,7 @@ impl VisualizerConfig {
 
     /// Compute fixed frequency-band metadata for this config.
     ///
-    /// Magnitudes are not included here; they are emitted in `ChannelSpectrum.bins`.
+    /// Measurements are not included here; they are emitted in `ChannelSpectrum.bins`.
     pub fn frequency_bins(&self) -> Vec<FrequencyBin> {
         self.transform
             .frequency_bins(self.min_frequency_hz, self.max_frequency_hz)
@@ -490,10 +490,72 @@ pub struct ChannelSpectrum {
     pub peak: f32,
     /// RMS value over the current callback batch.
     pub rms: f32,
-    /// Magnitude per configured frequency band.
+    /// Magnitude and power measurements per configured frequency band.
     ///
     /// Index-aligned with `Visualizer::frequency_bins()` / `VisualizerConfig::frequency_bins()`.
-    pub bins: Vec<f32>,
+    pub bins: Vec<FrequencyData>,
+}
+
+/// Measurements for one configured frequency band.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FrequencyData {
+    /// Mean normalized FFT magnitude across the band.
+    ///
+    /// Use magnitude for spectrum-bar height and other displays where a tone's
+    /// amplitude should be visually intuitive and comparable between FFT window
+    /// sizes. Because this is a mean, a narrow tone contributes less to a wider
+    /// band containing many otherwise-quiet FFT lines.
+    pub magnitude: f32,
+    /// Largest normalized FFT magnitude found within the band.
+    ///
+    /// Use peak magnitude for spectrum bars or narrow-tone detection when a strong
+    /// frequency should remain visible inside a wide band. Unlike [`Self::power`],
+    /// this value is not additive, and it is more sensitive to FFT resolution and
+    /// spectral leakage than the mean [`Self::magnitude`].
+    pub peak_magnitude: f32,
+    /// Integrated mean-square signal power within the band.
+    ///
+    /// Use power when comparing how much signal is present in different frequency
+    /// regions, such as RGB color balance, band-level meters, or effect triggers.
+    /// Power values are additive across non-overlapping bands and are normalized
+    /// for FFT length and Hann-window power, allowing bass and upper FFT results
+    /// to be combined. This is a linear amplitude-squared value, not decibels.
+    pub power: f32,
+}
+
+impl FrequencyData {
+    /// Convert [`Self::power`] to decibels relative to `reference_power`.
+    ///
+    /// This uses `10 * log10(power / reference_power)`. A power equal to the
+    /// reference is `0 dB`, half the reference power is approximately `-3.01 dB`,
+    /// and zero power returns negative infinity.
+    ///
+    /// Choose the reference according to the units and convention used by the
+    /// input samples:
+    ///
+    /// - `0.5` for AES17-style dBFS with normalized `-1.0..=1.0` samples, where a
+    ///   full-scale sine wave is `0 dBFS`.
+    /// - `1.0` for a mean-square full-scale reference, where a full-scale sine is
+    ///   approximately `-3.01 dB` and a constant full-scale signal is `0 dB`.
+    /// - `4.0e-10` for dB SPL when samples are calibrated in pascals, corresponding
+    ///   to `(20 µPa RMS)^2`.
+    ///
+    /// Normalized digital audio samples do not by themselves contain the
+    /// calibration needed for dB SPL or other physical-unit standards.
+    ///
+    /// Use the linear [`Self::power`] value when summing bands or computing
+    /// proportions. Use this conversion for logarithmically scaled displays.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `reference_power` is not finite and greater than zero.
+    pub fn power_db(&self, reference_power: f32) -> f32 {
+        assert!(
+            reference_power.is_finite() && reference_power > 0.0,
+            "reference_power must be finite and greater than zero"
+        );
+        10.0 * (self.power / reference_power).log10()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -526,17 +588,20 @@ impl FftState {
         }
     }
 
-    fn magnitudes(&mut self, history: &VecDeque<f32>) -> Vec<f32> {
+    fn values(&mut self, history: &VecDeque<f32>) -> Vec<FrequencyData> {
         self.input.fill(0.0);
         let available = history.len().min(self.len);
         let history_start = history.len().saturating_sub(available);
-        let coherent_gain = (0..available)
-            .map(|index| hann_window(index, available))
-            .sum::<f32>()
-            .max(f32::EPSILON);
+        let mut coherent_gain = 0.0;
+        let mut window_power = 0.0;
         for (offset, sample) in history.iter().skip(history_start).enumerate() {
-            self.input[offset] = *sample * hann_window(offset, available);
+            let window = hann_window(offset, available);
+            coherent_gain += window;
+            window_power += window * window;
+            self.input[offset] = *sample * window;
         }
+        let coherent_gain = coherent_gain.max(f32::EPSILON);
+        let power_normalization = (self.len as f32 * window_power).max(f32::EPSILON);
         self.fft
             .process(&mut self.input, &mut self.spectrum)
             .expect("realfft buffers must match the planned FFT length");
@@ -546,12 +611,17 @@ impl FftState {
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                let scale = if index == 0 || index == last {
+                let one_sided_power_scale = if index == 0 || index == last {
                     1.0
                 } else {
                     2.0
                 };
-                value.norm() * scale / coherent_gain
+                let magnitude = value.norm() * one_sided_power_scale / coherent_gain;
+                FrequencyData {
+                    magnitude,
+                    peak_magnitude: magnitude,
+                    power: value.norm_sqr() * one_sided_power_scale / power_normalization,
+                }
             })
             .collect()
     }
@@ -669,11 +739,11 @@ impl ChannelDecimator {
 ///             config,
 ///             move |channels, sample_rate_hz| {
 ///                 if let Some(ch0) = channels.first() {
-///                     for (i, magnitude) in ch0.bins.iter().copied().take(5).enumerate() {
+///                     for (i, value) in ch0.bins.iter().take(5).enumerate() {
 ///                         let range = &bins[i];
 ///                         println!(
 ///                             "[{} Hz] {:>6.0}..{:>6.0} Hz => {:.4}",
-///                             sample_rate_hz, range.hz_lo, range.hz_hi, magnitude
+///                             sample_rate_hz, range.hz_lo, range.hz_hi, value.magnitude
 ///                         );
 ///                     }
 ///                 }
@@ -903,9 +973,9 @@ impl<const C: usize> Visualizer<C> {
     fn build_frame(&mut self, channels: usize, sample_rate_hz: u32) -> VisualizerFrame {
         let mut spectra = Vec::with_capacity(channels);
         for channel in 0..channels {
-            let bass = self.bass_fft.magnitudes(&self.histories[channel]);
-            let upper = self.upper_fft.magnitudes(&self.histories[channel]);
-            let bins = self.compute_bin_magnitudes(self.analysis_sample_rate_hz, &bass, &upper);
+            let bass = self.bass_fft.values(&self.histories[channel]);
+            let upper = self.upper_fft.values(&self.histories[channel]);
+            let bins = self.compute_bin_values(self.analysis_sample_rate_hz, &bass, &upper);
             spectra.push(ChannelSpectrum {
                 peak: self.hop_peak[channel],
                 rms: (self.hop_sum_sq[channel] / self.hop_frames as f32).sqrt(),
@@ -918,12 +988,12 @@ impl<const C: usize> Visualizer<C> {
         }
     }
 
-    fn compute_bin_magnitudes(
+    fn compute_bin_values(
         &self,
         analysis_sample_rate_hz: u32,
-        bass: &[f32],
-        upper: &[f32],
-    ) -> Vec<f32> {
+        bass: &[FrequencyData],
+        upper: &[FrequencyData],
+    ) -> Vec<FrequencyData> {
         let effective_max = self
             .config
             .configured_max_frequency_hz()
@@ -936,10 +1006,10 @@ impl<const C: usize> Visualizer<C> {
                 let lo = band.hz_lo;
                 let hi = band.hz_hi.min(effective_max);
                 if hi <= lo {
-                    return 0.0;
+                    return FrequencyData::default();
                 }
                 if hi <= crossover {
-                    return average_fft_range(
+                    return aggregate_fft_range(
                         bass,
                         self.bass_fft.len,
                         analysis_sample_rate_hz,
@@ -948,7 +1018,7 @@ impl<const C: usize> Visualizer<C> {
                     );
                 }
                 if lo >= crossover {
-                    return average_fft_range(
+                    return aggregate_fft_range(
                         upper,
                         self.upper_fft.len,
                         analysis_sample_rate_hz,
@@ -959,21 +1029,27 @@ impl<const C: usize> Visualizer<C> {
 
                 let bass_width = crossover - lo;
                 let upper_width = hi - crossover;
-                let bass_value = average_fft_range(
+                let bass_value = aggregate_fft_range(
                     bass,
                     self.bass_fft.len,
                     analysis_sample_rate_hz,
                     lo,
                     crossover,
                 );
-                let upper_value = average_fft_range(
+                let upper_value = aggregate_fft_range(
                     upper,
                     self.upper_fft.len,
                     analysis_sample_rate_hz,
                     crossover,
                     hi,
                 );
-                (bass_value * bass_width + upper_value * upper_width) / (bass_width + upper_width)
+                FrequencyData {
+                    magnitude: (bass_value.magnitude * bass_width
+                        + upper_value.magnitude * upper_width)
+                        / (bass_width + upper_width),
+                    peak_magnitude: bass_value.peak_magnitude.max(upper_value.peak_magnitude),
+                    power: bass_value.power + upper_value.power,
+                }
             })
             .collect()
     }
@@ -1083,24 +1159,31 @@ pub(crate) fn derive_fft_len(period: Duration, sample_rate_hz: u32) -> usize {
     target.next_power_of_two().max(1)
 }
 
-fn average_fft_range(
-    magnitudes: &[f32],
+fn aggregate_fft_range(
+    values: &[FrequencyData],
     fft_len: usize,
     sample_rate_hz: u32,
     hz_lo: f32,
     hz_hi: f32,
-) -> f32 {
-    if magnitudes.is_empty() || hz_hi <= hz_lo {
-        return 0.0;
+) -> FrequencyData {
+    if values.is_empty() || hz_hi <= hz_lo {
+        return FrequencyData::default();
     }
-    let last = magnitudes.len() - 1;
+    let last = values.len() - 1;
     let first_bin = hz_to_bin(hz_lo, fft_len, sample_rate_hz).min(last);
     let last_bin = hz_to_bin(hz_hi, fft_len, sample_rate_hz).min(last);
     if last_bin < first_bin {
-        return 0.0;
+        return FrequencyData::default();
     }
-    let range = &magnitudes[first_bin..=last_bin];
-    range.iter().sum::<f32>() / range.len() as f32
+    let range = &values[first_bin..=last_bin];
+    FrequencyData {
+        magnitude: range.iter().map(|value| value.magnitude).sum::<f32>() / range.len() as f32,
+        peak_magnitude: range
+            .iter()
+            .map(|value| value.peak_magnitude)
+            .fold(0.0, f32::max),
+        power: range.iter().map(|value| value.power).sum(),
+    }
 }
 
 /// Convert edge list into `[lo, hi]` frequency ranges.
@@ -1137,6 +1220,37 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn frequency_data_converts_power_to_decibels() {
+        assert!(approx_eq(
+            FrequencyData {
+                magnitude: 0.0,
+                peak_magnitude: 0.0,
+                power: 1.0,
+            }
+            .power_db(1.0),
+            0.0,
+            1e-6,
+        ));
+        assert!(approx_eq(
+            FrequencyData {
+                magnitude: 0.0,
+                peak_magnitude: 0.0,
+                power: 2.0,
+            }
+            .power_db(4.0),
+            -3.010_300_2,
+            1e-5,
+        ));
+        let silence_db = FrequencyData {
+            magnitude: 0.0,
+            peak_magnitude: 0.0,
+            power: 0.0,
+        }
+        .power_db(1.0);
+        assert!(silence_db.is_infinite() && silence_db.is_sign_negative());
     }
 
     #[test]
@@ -1312,8 +1426,27 @@ mod tests {
         let mut planner = RealFftPlanner::new();
         let mut fft = FftState::new(&mut planner, 8);
         let history = VecDeque::from([1.0, 1.0, 1.0, 1.0]);
-        let magnitudes = fft.magnitudes(&history);
-        assert!(approx_eq(magnitudes[0], 1.0, 1e-5));
+        let values = fft.values(&history);
+        assert!(approx_eq(values[0].magnitude, 1.0, 1e-5));
+    }
+
+    #[test]
+    fn integrated_fft_power_matches_sine_mean_square() {
+        let sample_rate = 4_096;
+        let mut planner = RealFftPlanner::new();
+        let mut fft = FftState::new(&mut planner, sample_rate);
+        let history = (0..sample_rate)
+            .map(|index| {
+                let phase = 2.0 * std::f32::consts::PI * 125.0 * index as f32 / sample_rate as f32;
+                0.5 * phase.sin()
+            })
+            .collect();
+        let power = fft
+            .values(&history)
+            .iter()
+            .map(|value| value.power)
+            .sum::<f32>();
+        assert!(approx_eq(power, 0.125, 1e-4), "power was {power}");
     }
 
     #[test]
@@ -1342,9 +1475,26 @@ mod tests {
         let mut visualizer = Visualizer::<1>::new(config).unwrap();
         let output = visualizer.process_batch(&mono_batch(samples), 1, sample_rate);
         let bins = &output.last().unwrap().channels[0].bins;
-        assert!(bins[0] > 0.35, "bass magnitude was {}", bins[0]);
-        assert!(bins[1] > 0.35, "upper magnitude was {}", bins[1]);
-        assert!((bins[0] - bins[1]).abs() < 0.1, "magnitudes: {bins:?}");
+        assert!(
+            bins[0].magnitude > 0.35,
+            "bass magnitude was {}",
+            bins[0].magnitude
+        );
+        assert!(
+            bins[1].magnitude > 0.35,
+            "upper magnitude was {}",
+            bins[1].magnitude
+        );
+        assert!(
+            (bins[0].magnitude - bins[1].magnitude).abs() < 0.1,
+            "values: {bins:?}"
+        );
+        assert!(bins[0].peak_magnitude > bins[0].magnitude);
+        assert!(bins[1].peak_magnitude > bins[1].magnitude);
+        assert!(
+            (bins[0].power - bins[1].power).abs() < 0.02,
+            "values: {bins:?}"
+        );
     }
 
     #[test]
@@ -1388,10 +1538,16 @@ mod tests {
         assert_eq!(source_rate.analysis_sample_rate_hz, 96_000);
         assert_eq!(decimated.analysis_sample_rate_hz, 24_000);
         assert!(
-            (source_channel.bins[1] - decimated_channel.bins[1]).abs() < 0.02,
+            (source_channel.bins[1].magnitude - decimated_channel.bins[1].magnitude).abs() < 0.02,
             "source={} decimated={}",
-            source_channel.bins[1],
-            decimated_channel.bins[1]
+            source_channel.bins[1].magnitude,
+            decimated_channel.bins[1].magnitude
+        );
+        assert!(
+            (source_channel.bins[1].power - decimated_channel.bins[1].power).abs() < 0.02,
+            "source={} decimated={}",
+            source_channel.bins[1].power,
+            decimated_channel.bins[1].power
         );
         assert!(approx_eq(source_channel.peak, decimated_channel.peak, 1e-6));
         assert!(approx_eq(source_channel.rms, decimated_channel.rms, 1e-6));
