@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bass_window_duration: Duration::from_millis(170),
             upper_window_duration: Duration::from_millis(33),
             crossover_frequency_hz: 250.0,
-            decimation: true, // automatically reduce the FFT analysis rate when safe
+            allow_decimation: true, // automatically reduce the FFT analysis rate when safe
             drop_late_batches: true, // stay near live playback if analysis falls behind
             transform: Transform::FourierLog(28), // default transform
             ..Default::default()

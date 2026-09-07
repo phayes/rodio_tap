@@ -381,16 +381,17 @@ pub struct VisualizerConfig {
     ///
     /// Default: `TOP_FREQUENCY_HUMAN` (`20_000.0`).
     pub max_frequency_hz: f32,
-    /// Whether FFT input should be decimated when the configured frequency range permits it.
+    /// Whether FFT input may be decimated when the configured frequency range permits it.
     ///
     /// When enabled, the visualizer applies as many anti-aliased 2:1 stages as possible
-    /// while retaining Nyquist headroom above the highest configured frequency bin.
+    /// while retaining at least 20% Nyquist headroom above the highest configured
+    /// frequency bin.
     ///
     /// Peak/RMS calculations and the sample rate reported in [`VisualizerFrame`]
     /// continue to use the original stream.
     ///
     /// Default: `true`.
-    pub decimation: bool,
+    pub allow_decimation: bool,
     /// Whether visualizer runners discard queued batches when analysis falls behind.
     ///
     /// When enabled, one queued batch is skipped for each complete emission interval
@@ -416,7 +417,7 @@ impl Default for VisualizerConfig {
             transform: Transform::default(),
             min_frequency_hz: LOW_FREQUENCY_HUMAN,
             max_frequency_hz: TOP_FREQUENCY_HUMAN,
-            decimation: true,
+            allow_decimation: true,
             drop_late_batches: true,
         }
     }
@@ -966,7 +967,7 @@ impl<const C: usize> Visualizer<C> {
             .min(sample_rate_hz as f32 * 0.5);
         let decimation_stages = decimation_stages(
             sample_rate_hz,
-            self.config.decimation,
+            self.config.allow_decimation,
             configured_max_frequency_hz,
         );
         self.analysis_sample_rate_hz = sample_rate_hz >> decimation_stages;
@@ -1079,7 +1080,7 @@ impl<const C: usize> Visualizer<C> {
     }
 }
 
-const DECIMATION_NYQUIST_HEADROOM: f32 = 1.05;
+const DECIMATION_NYQUIST_HEADROOM: f32 = 1.2;
 
 fn decimation_stages(
     source_sample_rate_hz: u32,
@@ -1379,11 +1380,15 @@ mod tests {
     #[test]
     fn decimation_selects_safe_power_of_two_rates() {
         let defaults = VisualizerConfig::default();
-        assert!(defaults.decimation);
+        assert!(defaults.allow_decimation);
         assert!(defaults.drop_late_batches);
         assert_eq!(decimation_stages(44_100, true, 20_000.0), 0);
+        assert_eq!(decimation_stages(48_000, true, 20_000.0), 0);
+        assert_eq!(decimation_stages(88_200, true, 20_000.0), 0);
         assert_eq!(decimation_stages(96_000, true, 20_000.0), 1);
         assert_eq!(decimation_stages(192_000, true, 20_000.0), 2);
+        assert_eq!(decimation_stages(44_100, true, 10_000.0), 0);
+        assert_eq!(decimation_stages(48_000, true, 10_000.0), 1);
         assert_eq!(decimation_stages(48_000, true, 1_500.0), 3);
         assert_eq!(decimation_stages(96_000, false, 20_000.0), 0);
         assert_eq!(decimation_stages(96_000, true, 24_000.0), 0);
@@ -1489,7 +1494,7 @@ mod tests {
                 FrequencyBin::new(124.5, 125.5),
                 FrequencyBin::new(999.0, 1_001.0),
             ]),
-            decimation: true,
+            allow_decimation: true,
             drop_late_batches: true,
         };
         let samples = (0..sample_rate)
@@ -1535,7 +1540,7 @@ mod tests {
                 0.5 * phase.sin()
             })
             .collect::<Vec<_>>();
-        let make_config = |decimation| VisualizerConfig {
+        let make_config = |allow_decimation| VisualizerConfig {
             period: Duration::from_millis(16),
             bass_window_duration: Duration::from_millis(32),
             upper_window_duration: Duration::from_millis(32),
@@ -1546,7 +1551,7 @@ mod tests {
                 FrequencyBin::new(100.0, 500.0),
                 FrequencyBin::new(10_007.0, 10_008.0),
             ]),
-            decimation,
+            allow_decimation,
             drop_late_batches: true,
         };
 
@@ -1564,7 +1569,7 @@ mod tests {
         let decimated_channel = &decimated_output.channels[0];
 
         assert_eq!(source_rate.analysis_sample_rate_hz, 96_000);
-        assert_eq!(decimated.analysis_sample_rate_hz, 24_000);
+        assert_eq!(decimated.analysis_sample_rate_hz, 48_000);
         assert!(
             (source_channel.bins[1].magnitude - decimated_channel.bins[1].magnitude).abs() < 0.02,
             "source={} decimated={}",

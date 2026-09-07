@@ -9,9 +9,9 @@
   `bass_window_duration` below `crossover_frequency_hz` and a shorter
   `upper_window_duration` above it. The defaults are 170 ms, 250 Hz, and 33 ms
   respectively.
-- Added `VisualizerConfig::decimation`, enabled by default. The visualizer
+- Added `VisualizerConfig::allow_decimation`, enabled by default. The visualizer
   automatically applies anti-aliased power-of-two decimation when the highest
-  configured frequency bin leaves sufficient Nyquist headroom. Peak and RMS
+  configured frequency bin leaves at least 20% Nyquist headroom. Peak and RMS
   measurements, callback cadence, and the reported stream sample rate continue
   to use the original source rate.
 - Added `FrequencyData` for each configured frequency band:
@@ -80,7 +80,7 @@ let config = VisualizerConfig {
     bass_window_duration: Duration::from_millis(170),
     upper_window_duration: Duration::from_millis(33),
     crossover_frequency_hz: 250.0,
-    decimation: true,
+    allow_decimation: true,
     drop_late_batches: true,
     ..Default::default()
 };
