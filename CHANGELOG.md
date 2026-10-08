@@ -3,6 +3,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
 ### Added
 
 - Added multi-resolution spectrum analysis. `Visualizer` now uses a long
@@ -41,6 +43,7 @@
 ### Changed
 
 - Replaced `rustfft` with `realfft` for real-to-complex visualizer FFTs.
+- Updated `rtrb` to 0.4.
 - FFT magnitudes are now always normalized using Hann coherent gain. This makes
   equal-amplitude tones comparable across the bass and upper FFT window sizes.
 - FFT power is normalized using FFT length and Hann window power, allowing
@@ -119,5 +122,6 @@ reader.run(|batch| {
 
 - Previous published release.
 
-[Unreleased]: https://github.com/phayes/rodio_tap/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/phayes/rodio_tap/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/phayes/rodio_tap/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/phayes/rodio_tap/releases/tag/v0.2.0

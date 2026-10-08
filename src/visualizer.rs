@@ -712,7 +712,7 @@ impl ChannelDecimator {
 /// - `wasm_simd`
 ///
 /// Example dependency setup:
-/// `rodio_tap = { version = "0.2.0", features = ["visualizer", "avx"] }`
+/// `rodio_tap = { version = "0.3.0", features = ["visualizer", "avx"] }`
 ///
 /// See a full runnable example:
 /// [examples/wav_visualizer_simple.rs](https://github.com/phayes/rodio_tap/blob/master/examples/wav_visualizer_simple.rs)
