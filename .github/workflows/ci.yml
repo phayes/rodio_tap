@@ -46,6 +46,9 @@ jobs:
       - name: Run doctests
         run: cargo test --doc
 
+      - name: Run doctests (all features)
+        run: cargo test --doc --all-features
+
       - name: Check examples (default features)
         run: cargo check --examples
 

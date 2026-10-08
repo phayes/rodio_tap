@@ -11,7 +11,7 @@ authors = ["Patrick Hayes <patrick.d.hayes@gmail.com>"]
 
 [dependencies]
 rodio = "0.22"
-rtrb = "0.3"
+rtrb = "0.4"
 arc-swap = "1"
 arrayvec = "0.7"
 cpal = "0.17"

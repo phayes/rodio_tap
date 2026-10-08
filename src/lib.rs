@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(not(doctest), doc = include_str!("../README.md"))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod tap;
@@ -119,6 +119,12 @@ mod visualizer;
 
 #[cfg(feature = "visualizer")]
 pub use visualizer::*;
+
+// The README examples use the `async` and `visualizer` features, so they are
+// only doctested when those features are enabled.
+#[cfg(all(doctest, feature = "async", feature = "visualizer"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 mod batch;
 mod frame_reader;

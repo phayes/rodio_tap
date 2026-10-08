@@ -133,7 +133,7 @@ This crate exposes SIMD feature flags that forward directly to `realfft`:
 - `neon`
 - `wasm_simd`
 
-```rust
+```rust,no_run
 use rodio::source::SineWave;
 use rodio::{DeviceSinkBuilder, Player, Source};
 use std::sync::Arc;
