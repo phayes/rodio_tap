@@ -9,6 +9,10 @@ repository = "https://github.com/phayes/rodio_tap"
 documentation = "https://docs.rs/rodio_tap"
 authors = ["Patrick Hayes <patrick.d.hayes@gmail.com>"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 rodio = "0.22"
 rtrb = "0.4"
